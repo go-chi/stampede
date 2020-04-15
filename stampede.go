@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vcilabs/hubs/pkg/stampede/singleflight"
+	"github.com/goware/stampede/singleflight"
 )
 
 /* Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a single data fetch operation per expired / missing key

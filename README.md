@@ -6,13 +6,13 @@ Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only run
 
 ```go
 import (
-    "net/http"
+	"net/http"
 
-    "github.com/goware/stampede"
+	"github.com/goware/stampede"
 )
 
 var (
-    reqCache = stampede.NewCache(5*time.Second, 10*time.Second)
+	reqCache = stampede.NewCache(5*time.Second, 10*time.Second)
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {	
@@ -26,8 +26,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func fetchData() (interface{}, error) {	
-    // fetch from remote source.. or compute/render..
-    data := []]byte("some response data")
+	// fetch from remote source.. or compute/render..
+	data := []byte("some response data")
 
 	return data, nil	
 }
