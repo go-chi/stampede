@@ -1,6 +1,7 @@
 # Stampede
 
-Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a single data fetch operation per expired / missing key regardless of number of requests to that key.
+Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
+single data fetch operation per expired / missing key regardless of number of requests to that key.
 
 ## Example:
 
@@ -16,7 +17,7 @@ var (
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {	
-	data, err := reqCache.Get(r.URL.Path, fetchData, false)	
+	data, err := reqCache.Get(r.URL.Path, fetchData)
 	if err != nil {	
 		w.WriteHeader(503)
 		return	
@@ -25,10 +26,14 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.Write(data.([]byte))
 }
 
-func fetchData() (interface{}, error) {	
+func fetchData(ctx context.Context) (interface{}, error) {
 	// fetch from remote source.. or compute/render..
 	data := []byte("some response data")
 
 	return data, nil	
 }
 ```
+
+## LICENSE
+
+MIT
