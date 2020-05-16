@@ -22,6 +22,7 @@ func Handler(ttl time.Duration, keyFunc ...func(r *http.Request) string) func(ne
 				key = keyFunc[0](r)
 			} else {
 				key = fmt.Sprintf("%s %s", r.Method, strings.ToLower(r.URL.Path))
+				key = fmt.Sprintf("%d", StringToHash(key)) // TODO: prob keep this in uint64 ..
 			}
 
 			// mark the request that actually processes the response
@@ -39,8 +40,6 @@ func Handler(ttl time.Duration, keyFunc ...func(r *http.Request) string) func(ne
 					headers: ww.Header(),
 					status:  ww.Status(),
 					body:    buf.Bytes(),
-					huh:     string(buf.Bytes()),
-					time:    time.Now().Unix(),
 				}
 				return val, nil
 			})
@@ -76,8 +75,6 @@ type responseValue struct {
 	headers http.Header
 	status  int
 	body    []byte
-	huh     string
-	time    int64
 }
 
 type responseWriter struct {

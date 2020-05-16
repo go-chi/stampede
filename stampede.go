@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/goware/stampede/singleflight"
 )
 
@@ -104,4 +105,20 @@ func (v *value) IsExpired() bool {
 
 func (v *value) Value() interface{} {
 	return v.v
+}
+
+func BytesToHash(b ...[]byte) uint64 {
+	d := xxhash.New()
+	for _, v := range b {
+		d.Write(v)
+	}
+	return d.Sum64()
+}
+
+func StringToHash(s ...string) uint64 {
+	d := xxhash.New()
+	for _, v := range s {
+		d.WriteString(v)
+	}
+	return d.Sum64()
 }

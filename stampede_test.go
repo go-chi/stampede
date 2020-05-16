@@ -17,7 +17,6 @@ import (
 )
 
 func TestGet(t *testing.T) {
-
 	var count uint64
 	cache := stampede.NewCache(time.Duration(2*time.Second), time.Duration(5*time.Second))
 
@@ -161,4 +160,12 @@ func TestHandler(t *testing.T) {
 		t.Error("queue count was expected to be empty, but count:", finalCount)
 	}
 	log.Println("final count:", finalCount)
+}
+
+func TestHash(t *testing.T) {
+	h1 := stampede.BytesToHash([]byte{1, 2, 3})
+	assert.Equal(t, uint64(8376154270085342629), h1)
+
+	h2 := stampede.StringToHash("123")
+	assert.Equal(t, uint64(4353148100880623749), h2)
 }
