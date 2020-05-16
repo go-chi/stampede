@@ -15,12 +15,12 @@ func NewCache(freshFor, ttl time.Duration) *Cache {
 	return &Cache{
 		freshFor: freshFor,
 		ttl:      ttl,
-		values:   make(map[string]*value),
+		values:   make(map[string]value),
 	}
 }
 
 type Cache struct {
-	values map[string]*value
+	values map[string]value
 
 	freshFor time.Duration
 	ttl      time.Duration
@@ -70,7 +70,7 @@ func (c *Cache) set(key string, fn singleflight.DoFunc) singleflight.DoFunc {
 		}
 
 		c.mu.Lock()
-		c.values[key] = &value{
+		c.values[key] = value{
 			v:          val,
 			expiry:     time.Now().Add(c.ttl),
 			bestBefore: time.Now().Add(c.freshFor),
