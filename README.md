@@ -70,6 +70,22 @@ func fetchData(ctx context.Context) (interface{}, error) {
 }
 ```
 
+## Notes
+
+* Requests passed through the stampede handler will be batched into a single request
+when there are parallel requests for the same endpoint/resource. This is also known
+as request coalescing.
+* Parallel requests for the same endpoint / resource, will be just a single handler call
+and the remaining requests will receive the response of the first request handler.
+* The response payload for the endpoint / resource will then be cached for up to `ttl`
+time duration for subequence requests, which offers further caching. You may also
+use a `ttl` value of 0 if you want the response to be as fresh as possible, and still
+prevent a stampede scenario on your handler.
+* *Security note:* response headers will be the same for all requests, so make sure
+to not include anything sensitive or user specific. In the case you require user-specific
+stampede handlers, make sure you pass a custom `keyFunc` to the `stampede.Handler` and
+split the cache by an account's id.
+
 
 ## LICENSE
 
