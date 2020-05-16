@@ -10,14 +10,19 @@ import (
 	"time"
 )
 
-func Handler(ttl time.Duration) func(next http.Handler) http.Handler {
+func Handler(ttl time.Duration, keyFunc ...func(r *http.Request) string) func(next http.Handler) http.Handler {
 	cache := NewCache(ttl, ttl*2)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 			// cache key for the request
-			key := fmt.Sprintf("%s %s", r.Method, strings.ToLower(r.URL.Path))
+			var key string
+			if len(keyFunc) > 0 {
+				key = keyFunc[0](r)
+			} else {
+				key = fmt.Sprintf("%s %s", r.Method, strings.ToLower(r.URL.Path))
+			}
 
 			// mark the request that actually processes the response
 			first := false
