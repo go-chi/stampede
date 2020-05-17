@@ -10,23 +10,18 @@ import (
 	"time"
 )
 
-func Handler(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Request) string) func(next http.Handler) http.Handler {
+func Handler(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Request) uint64) func(next http.Handler) http.Handler {
 	cache := NewCache(cacheSize, ttl, ttl*2)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-			// TODO: final........
-			// 1. make Get() key a interface{}
-			// 2. save just uint64 as the key within the default handler..
-
 			// cache key for the request
-			var key string
+			var key uint64
 			if len(keyFunc) > 0 {
 				key = keyFunc[0](r)
 			} else {
-				key = fmt.Sprintf("%s %s", r.Method, strings.ToLower(r.URL.Path))
-				key = fmt.Sprintf("%d", StringToHash(key)) // TODO: prob keep this in uint64 ..
+				key = StringToHash(r.Method, strings.ToLower(r.URL.Path))
 			}
 
 			// mark the request that actually processes the response

@@ -32,19 +32,19 @@ type Cache struct {
 	callGroup singleflight.Group
 }
 
-func (c *Cache) Get(ctx context.Context, key string, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+func (c *Cache) Get(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
 	return c.get(ctx, key, false, fn)
 }
 
-func (c *Cache) GetFresh(ctx context.Context, key string, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+func (c *Cache) GetFresh(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
 	return c.get(ctx, key, true, fn)
 }
 
-func (c *Cache) Set(ctx context.Context, key string, fn func(ctx context.Context) (interface{}, error)) (interface{}, bool, error) {
+func (c *Cache) Set(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, bool, error) {
 	return c.callGroup.Do(ctx, key, c.set(key, fn))
 }
 
-func (c *Cache) get(ctx context.Context, key string, freshOnly bool, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+func (c *Cache) get(ctx context.Context, key interface{}, freshOnly bool, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
 	c.mu.RLock()
 	v, ok := c.values.Get(key)
 	c.mu.RUnlock()
@@ -72,7 +72,7 @@ func (c *Cache) get(ctx context.Context, key string, freshOnly bool, fn func(ctx
 	return v, err
 }
 
-func (c *Cache) set(key string, fn singleflight.DoFunc) singleflight.DoFunc {
+func (c *Cache) set(key interface{}, fn singleflight.DoFunc) singleflight.DoFunc {
 	return singleflight.DoFunc(func(ctx context.Context) (interface{}, error) {
 		val, err := fn(ctx)
 		if err != nil {

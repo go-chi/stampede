@@ -19,8 +19,8 @@ import (
 // Group represents a class of work and forms a namespace in
 // which units of work can be executed with duplicate suppression.
 type Group struct {
-	calls map[string]*call // lazily initialized
-	mu    sync.Mutex       // protects m
+	calls map[interface{}]*call // lazily initialized
+	mu    sync.Mutex            // protects m
 }
 
 type DoFunc func(ctx context.Context) (interface{}, error)
@@ -48,10 +48,10 @@ type call struct {
 // time. If a duplicate comes in, the duplicate caller waits for the
 // original to complete and receives the same results.
 // The return value shared indicates whether v was given to multiple callers.
-func (g *Group) Do(ctx context.Context, key string, fn func(ctx context.Context) (interface{}, error)) (v interface{}, shared bool, err error) {
+func (g *Group) Do(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (v interface{}, shared bool, err error) {
 	g.mu.Lock()
 	if g.calls == nil {
-		g.calls = make(map[string]*call)
+		g.calls = make(map[interface{}]*call)
 	}
 	if c, ok := g.calls[key]; ok {
 		c.shared = true
@@ -73,7 +73,7 @@ func (g *Group) Do(ctx context.Context, key string, fn func(ctx context.Context)
 	return g.wait(ctx, key, c)
 }
 
-func (g *Group) wait(ctx context.Context, key string, c *call) (v interface{}, shared bool, err error) {
+func (g *Group) wait(ctx context.Context, key interface{}, c *call) (v interface{}, shared bool, err error) {
 	select {
 	case <-c.done:
 		v = c.val
