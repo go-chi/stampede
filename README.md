@@ -2,6 +2,10 @@
 
 ![](https://github.com/goware/stampede/workflows/build/badge.svg?branch=master)
 
+Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
+single data fetch operation per expired / missing key regardless of number of requests to that key.
+
+
 ## Example 1: HTTP Middleware
 
 ```go
