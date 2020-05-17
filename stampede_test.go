@@ -18,7 +18,7 @@ import (
 
 func TestGet(t *testing.T) {
 	var count uint64
-	cache := stampede.NewCache(time.Duration(2*time.Second), time.Duration(5*time.Second))
+	cache := stampede.NewCache(512, time.Duration(2*time.Second), time.Duration(5*time.Second))
 
 	// repeat test multiple times
 	for x := 0; x < 5; x++ {
@@ -108,7 +108,7 @@ func TestHandler(t *testing.T) {
 		})
 	}
 
-	h := stampede.Handler(1 * time.Second)
+	h := stampede.Handler(512, 1*time.Second)
 
 	ts := httptest.NewServer(counter(recoverer(h(http.HandlerFunc(app)))))
 	defer ts.Close()

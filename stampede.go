@@ -7,21 +7,23 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/goware/stampede/singleflight"
+	lru "github.com/hashicorp/golang-lru"
 )
 
 // Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
 // single data fetch operation per expired / missing key regardless of number of requests to that key.
 
-func NewCache(freshFor, ttl time.Duration) *Cache {
+func NewCache(size int, freshFor, ttl time.Duration) *Cache {
+	values, _ := lru.New(size)
 	return &Cache{
 		freshFor: freshFor,
 		ttl:      ttl,
-		values:   make(map[string]value),
+		values:   values,
 	}
 }
 
 type Cache struct {
-	values map[string]value
+	values *lru.Cache
 
 	freshFor time.Duration
 	ttl      time.Duration
@@ -44,8 +46,15 @@ func (c *Cache) Set(ctx context.Context, key string, fn func(ctx context.Context
 
 func (c *Cache) get(ctx context.Context, key string, freshOnly bool, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
 	c.mu.RLock()
-	val, _ := c.values[key]
+	v, ok := c.values.Get(key)
 	c.mu.RUnlock()
+
+	var val value
+	if ok {
+		if val, ok = v.(value); !ok {
+			panic("stampede: invalid cache value")
+		}
+	}
 
 	// value exists and is fresh - just return
 	if val.IsFresh() {
@@ -71,11 +80,11 @@ func (c *Cache) set(key string, fn singleflight.DoFunc) singleflight.DoFunc {
 		}
 
 		c.mu.Lock()
-		c.values[key] = value{
+		c.values.Add(key, value{
 			v:          val,
 			expiry:     time.Now().Add(c.ttl),
 			bestBefore: time.Now().Add(c.freshFor),
-		}
+		})
 		c.mu.Unlock()
 
 		return val, nil
