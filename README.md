@@ -27,7 +27,7 @@ func main() {
 		w.Write([]byte("index"))
 	})
 
-	cached := stampede.Handler(1 * time.Second)
+	cached := stampede.Handler(512, 1 * time.Second)
 
 	r.With(cached).Get("/cached", func(w http.ResponseWriter, r *http.Request) {
 		// processing..
@@ -52,7 +52,7 @@ import (
 )
 
 var (
-	reqCache = stampede.NewCache(5*time.Second, 10*time.Second)
+	reqCache = stampede.NewCache(512, 5*time.Second, 10*time.Second)
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {	
