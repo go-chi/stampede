@@ -42,6 +42,13 @@ func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.H
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Cache all paths, as whitelist has not been provided
+			if len(pathMap) == 0 {
+				h(next).ServeHTTP(w, r)
+				return
+			}
+
+			// Match specific whitelist of paths
 			if _, ok := pathMap[strings.ToLower(r.URL.Path)]; ok {
 				// stampede-cache the matching path
 				h(next).ServeHTTP(w, r)
