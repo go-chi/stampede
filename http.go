@@ -5,12 +5,56 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
 )
 
-func Handler(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Request) uint64) func(next http.Handler) http.Handler {
+func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
+	keyFunc := func(r *http.Request) uint64 {
+		// Read the request payload, and then setup buffer for future reader
+		var buf []byte
+		if r.Body != nil {
+			buf, _ = ioutil.ReadAll(r.Body)
+		}
+		r.Body = ioutil.NopCloser(bytes.NewBuffer(buf))
+
+		// Prepare cache key based on request URL path and the request data payload.
+		key := BytesToHash([]byte(strings.ToLower(r.URL.Path)), buf)
+		return key
+	}
+
+	// mapping of url paths that are cacheable by the stampede handler
+	pathMap := map[string]struct{}{}
+	for _, path := range paths {
+		pathMap[strings.ToLower(path)] = struct{}{}
+	}
+
+	// Stampede handler with set ttl for how long content is fresh.
+	// Requests sent to this handler will be coalesced and in scenarios
+	// where there is a "stampede" or parallel requests for the same
+	// method and arguments, there will be just a single handler that
+	// executes, and the remaining handlers will use the response from
+	// the first request. The content thereafter will be cached for up to
+	// ttl time for subsequent requests for further caching.
+	h := HandlerWithKey(cacheSize, ttl, keyFunc)
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := pathMap[strings.ToLower(r.URL.Path)]; ok {
+				// stampede-cache the matching path
+				h(next).ServeHTTP(w, r)
+
+			} else {
+				// no caching
+				next.ServeHTTP(w, r)
+			}
+		})
+	}
+}
+
+func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Request) uint64) func(next http.Handler) http.Handler {
 	cache := NewCache(cacheSize, ttl, ttl*2)
 
 	return func(next http.Handler) http.Handler {
