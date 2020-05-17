@@ -1,6 +1,6 @@
 # Stampede
 
-![](https://github.com/goware/stampede/workflows/build/badge.svg?branch=master)
+![](https://github.com/go-chi/stampede/workflows/build/badge.svg?branch=master)
 
 Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
 single data fetch operation per expired / missing key regardless of number of requests to that key.
@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
-	"github.com/goware/stampede"
+	"github.com/go-chi/stampede"
 )
 
 func main() {
@@ -48,7 +48,7 @@ func main() {
 import (
 	"net/http"
 
-	"github.com/goware/stampede"
+	"github.com/go-chi/stampede"
 )
 
 var (

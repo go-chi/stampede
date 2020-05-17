@@ -1,4 +1,4 @@
-module github.com/goware/stampede
+module github.com/go-chi/stampede
 
 go 1.14
 

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goware/stampede"
+	"github.com/go-chi/stampede"
 	"github.com/stretchr/testify/assert"
 )
 

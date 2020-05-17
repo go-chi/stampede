@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/goware/stampede/singleflight"
+	"github.com/go-chi/stampede/singleflight"
 	lru "github.com/hashicorp/golang-lru"
 )
 
