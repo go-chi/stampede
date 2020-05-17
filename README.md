@@ -1,7 +1,6 @@
 # Stampede
 
-Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
-single data fetch operation per expired / missing key regardless of number of requests to that key.
+![build](https://github.com/goware/stampede/workflows/Go/badge.svg?branch=master)
 
 ## Example 1: HTTP Middleware
 
