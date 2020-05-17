@@ -1,6 +1,6 @@
 # Stampede
 
-(https://github.com/goware/stampede/actions)[![](https://github.com/goware/stampede/workflows/Go/badge.svg?branch=master)]
+(https://github.com/goware/stampede/actions) | [![](https://github.com/goware/stampede/workflows/Go/badge.svg?branch=master)]
 
 ## Example 1: HTTP Middleware
 
