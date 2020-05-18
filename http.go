@@ -17,8 +17,8 @@ func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.H
 		var buf []byte
 		if r.Body != nil {
 			buf, _ = ioutil.ReadAll(r.Body)
+			r.Body = ioutil.NopCloser(bytes.NewBuffer(buf))
 		}
-		r.Body = ioutil.NopCloser(bytes.NewBuffer(buf))
 
 		// Prepare cache key based on request URL path and the request data payload.
 		key := BytesToHash([]byte(strings.ToLower(r.URL.Path)), buf)
