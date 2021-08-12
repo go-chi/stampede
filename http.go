@@ -55,14 +55,14 @@ func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.H
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Cache all paths, as whitelist has not been provided
 			if len(pathMap) == 0 {
-				h(next).ServeHTTP(&responseWriterHeaderFilter{w}, r)
+				h(next).ServeHTTP(w, r)
 				return
 			}
 
 			// Match specific whitelist of paths
 			if _, ok := pathMap[strings.ToLower(r.URL.Path)]; ok {
 				// stampede-cache the matching path
-				h(next).ServeHTTP(&responseWriterHeaderFilter{w}, r)
+				h(next).ServeHTTP(w, r)
 
 			} else {
 				// no caching
@@ -123,8 +123,21 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Re
 				panic("stampede: handler received unexpected response value type")
 			}
 
-			for k, v := range resp.headers {
-				w.Header().Set(k, strings.Join(v, ", "))
+			header := w.Header()
+
+		nextHeader:
+			for k := range resp.headers {
+				for _, match := range stripOutHeaders {
+					// Prevent any header in stripOutHeaders to override the current
+					// value of that header. This is important when you don't want a
+					// header to affect all subsequent requests (for instance, when
+					// working with several CORS domains, you don't want the first domain
+					// to be recorded an to be printed in all responses)
+					if match == k {
+						continue nextHeader
+					}
+				}
+				header[k] = resp.headers[k]
 			}
 
 			w.WriteHeader(resp.status)
@@ -181,24 +194,4 @@ func (b *responseWriter) Status() int {
 
 func (b *responseWriter) BytesWritten() int {
 	return b.bytes
-}
-
-var _ = http.ResponseWriter(&responseWriter{})
-
-type responseWriterHeaderFilter struct {
-	http.ResponseWriter
-}
-
-// Header returns the header map except for a list of filtered-out headers
-// defined by the stripOutHeaders array.
-func (rw *responseWriterHeaderFilter) Header() http.Header {
-	header := rw.ResponseWriter.Header()
-	for key, _ := range header {
-		for _, match := range stripOutHeaders {
-			if match == key {
-				delete(header, key)
-			}
-		}
-	}
-	return header
 }
