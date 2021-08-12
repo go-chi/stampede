@@ -55,14 +55,14 @@ func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.H
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Cache all paths, as whitelist has not been provided
 			if len(pathMap) == 0 {
-				h(next).ServeHTTP(w, r)
+				h(next).ServeHTTP(&responseWriterHeaderFilter{w}, r)
 				return
 			}
 
 			// Match specific whitelist of paths
 			if _, ok := pathMap[strings.ToLower(r.URL.Path)]; ok {
 				// stampede-cache the matching path
-				h(next).ServeHTTP(w, r)
+				h(next).ServeHTTP(&responseWriterHeaderFilter{w}, r)
 
 			} else {
 				// no caching
@@ -95,7 +95,7 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Re
 
 				buf := bytes.NewBuffer(nil)
 
-				ww := &responseWriter{w: w, tee: buf}
+				ww := &responseWriter{ResponseWriter: w, tee: buf}
 
 				next.ServeHTTP(ww, r)
 
@@ -141,44 +141,24 @@ type responseValue struct {
 }
 
 type responseWriter struct {
-	w           http.ResponseWriter
+	http.ResponseWriter
 	wroteHeader bool
 	code        int
 	bytes       int
 	tee         io.Writer
 }
 
-// Header returns the header map except for a list of filtered-out headers
-// defined by the stripOutHeaders array.
-func (b *responseWriter) Header() http.Header {
-	// Header is a runtime filter. The results of this function cannot be static
-	// and cached, as the response is a map that can be modified by the caller,
-	// we cannot prevent keys to be written to the map but we can prevent keys
-	// from being returned.
-	filtered := http.Header{}
-nextHeader:
-	for k, v := range b.w.Header() {
-		for _, match := range stripOutHeaders {
-			if match == k {
-				continue nextHeader
-			}
-		}
-		filtered[k] = v
-	}
-	return filtered
-}
-
 func (b *responseWriter) WriteHeader(code int) {
 	if !b.wroteHeader {
 		b.code = code
 		b.wroteHeader = true
-		b.w.WriteHeader(code)
+		b.ResponseWriter.WriteHeader(code)
 	}
 }
 
 func (b *responseWriter) Write(buf []byte) (int, error) {
 	b.maybeWriteHeader()
-	n, err := b.w.Write(buf)
+	n, err := b.ResponseWriter.Write(buf)
 	if b.tee != nil {
 		_, err2 := b.tee.Write(buf[:n])
 		if err == nil {
@@ -204,3 +184,21 @@ func (b *responseWriter) BytesWritten() int {
 }
 
 var _ = http.ResponseWriter(&responseWriter{})
+
+type responseWriterHeaderFilter struct {
+	http.ResponseWriter
+}
+
+// Header returns the header map except for a list of filtered-out headers
+// defined by the stripOutHeaders array.
+func (rw *responseWriterHeaderFilter) Header() http.Header {
+	header := rw.ResponseWriter.Header()
+	for key, _ := range header {
+		for _, match := range stripOutHeaders {
+			if match == key {
+				delete(header, key)
+			}
+		}
+	}
+	return header
+}

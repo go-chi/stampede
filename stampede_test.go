@@ -140,10 +140,7 @@ func TestHandler(t *testing.T) {
 				t.Error("expecting response status:", expectedStatus)
 			}
 
-			if resp.Header.Get("X-Httpjoin") != "test" {
-				t.Error("expecting x-httpjoin test header")
-			}
-
+			assert.Equal(t, "test", resp.Header.Get("X-Httpjoin"), "expecting x-httpjoin test header")
 		}()
 	}
 
@@ -178,6 +175,7 @@ func TestIssue6_BypassCORSHeaders(t *testing.T) {
 
 	app := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "example.com")
+		w.Header().Set("X-Another-Header", "wakka")
 		w.WriteHeader(expectedStatus)
 		w.Write(expectedBody)
 	}
@@ -213,6 +211,7 @@ func TestIssue6_BypassCORSHeaders(t *testing.T) {
 			}
 
 			assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+			assert.Equal(t, "wakka", resp.Header.Get("X-Another-Header"))
 		}()
 	}
 
