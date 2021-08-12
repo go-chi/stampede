@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/cors"
 	"github.com/go-chi/stampede"
 	"github.com/stretchr/testify/assert"
 )
@@ -140,10 +141,7 @@ func TestHandler(t *testing.T) {
 				t.Error("expecting response status:", expectedStatus)
 			}
 
-			if resp.Header.Get("X-Httpjoin") != "test" {
-				t.Error("expecting x-httpjoin test header")
-			}
-
+			assert.Equal(t, "test", resp.Header.Get("X-Httpjoin"), "expecting x-httpjoin test header")
 		}()
 	}
 
@@ -168,4 +166,85 @@ func TestHash(t *testing.T) {
 
 	h2 := stampede.StringToHash("123")
 	assert.Equal(t, uint64(4353148100880623749), h2)
+}
+
+func TestIssue6_BypassCORSHeaders(t *testing.T) {
+	var expectedStatus int = 200
+	var expectedBody = []byte("hi")
+
+	var count uint64
+
+	domains := []string{
+		"google.com",
+		"sequence.build",
+		"horizon.io",
+		"github.com",
+		"ethereum.org",
+	}
+
+	app := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Another-Header", "wakka")
+		w.WriteHeader(expectedStatus)
+		w.Write(expectedBody)
+
+		atomic.AddUint64(&count, 1)
+	}
+
+	h := stampede.Handler(512, 1*time.Second)
+	c := cors.New(cors.Options{
+		AllowedOrigins: domains,
+		AllowedMethods: []string{"GET"},
+		AllowedHeaders: []string{"*"},
+	}).Handler
+
+	ts := httptest.NewServer(c(h(http.HandlerFunc(app))))
+	defer ts.Close()
+
+	var wg sync.WaitGroup
+	var domainsHit = map[string]bool{}
+
+	for _, domain := range domains {
+		wg.Add(1)
+		go func(domain string) {
+			defer wg.Done()
+
+			req, err := http.NewRequest("GET", ts.URL, nil)
+			assert.NoError(t, err)
+			req.Header.Set("Origin", domain)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			body, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if string(body) != string(expectedBody) {
+				t.Error("expecting response body:", string(expectedBody))
+			}
+
+			if resp.StatusCode != expectedStatus {
+				t.Error("expecting response status:", expectedStatus)
+			}
+
+			domainsHit[resp.Header.Get("Access-Control-Allow-Origin")] = true
+
+			assert.Equal(t, "wakka", resp.Header.Get("X-Another-Header"))
+
+		}(domain)
+	}
+
+	wg.Wait()
+
+	// expect all domains to be returned and recorded in domainsHit
+	for _, domain := range domains {
+		assert.True(t, domainsHit[domain])
+	}
+
+	// expect to have only one actual hit
+	assert.Equal(t, uint64(1), count)
 }
