@@ -92,9 +92,7 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Re
 			// process request (single flight)
 			val, err := cache.GetFresh(r.Context(), key, func(ctx context.Context) (interface{}, error) {
 				first = true
-
 				buf := bytes.NewBuffer(nil)
-
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
 
 				next.ServeHTTP(ww, r)
