@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+var stripOutHeaders = []string{
+	"Access-Control-Allow-Credentials",
+	"Access-Control-Allow-Headers",
+	"Access-Control-Allow-Methods",
+	"Access-Control-Allow-Origin",
+	"Access-Control-Expose-Headers",
+	"Access-Control-Max-Age",
+	"Access-Control-Request-Headers",
+	"Access-Control-Request-Method",
+}
+
 func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
 	keyFunc := func(r *http.Request) uint64 {
 		// Read the request payload, and then setup buffer for future reader
@@ -81,8 +92,10 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc ...func(r *http.Re
 			// process request (single flight)
 			val, err := cache.GetFresh(r.Context(), key, func(ctx context.Context) (interface{}, error) {
 				first = true
+
 				buf := bytes.NewBuffer(nil)
-				ww := &responseWriter{ResponseWriter: w, tee: buf}
+
+				ww := &responseWriter{w: w, tee: buf}
 
 				next.ServeHTTP(ww, r)
 
@@ -128,24 +141,44 @@ type responseValue struct {
 }
 
 type responseWriter struct {
-	http.ResponseWriter
+	w           http.ResponseWriter
 	wroteHeader bool
 	code        int
 	bytes       int
 	tee         io.Writer
 }
 
+// Header returns the header map except for a list of filtered-out headers
+// defined by the stripOutHeaders array.
+func (b *responseWriter) Header() http.Header {
+	// Header is a runtime filter. The results of this function cannot be static
+	// and cached, as the response is a map that can be modified by the caller,
+	// we cannot prevent keys to be written to the map but we can prevent keys
+	// from being returned.
+	filtered := http.Header{}
+nextHeader:
+	for k, v := range b.w.Header() {
+		for _, match := range stripOutHeaders {
+			if match == k {
+				continue nextHeader
+			}
+		}
+		filtered[k] = v
+	}
+	return filtered
+}
+
 func (b *responseWriter) WriteHeader(code int) {
 	if !b.wroteHeader {
 		b.code = code
 		b.wroteHeader = true
-		b.ResponseWriter.WriteHeader(code)
+		b.w.WriteHeader(code)
 	}
 }
 
 func (b *responseWriter) Write(buf []byte) (int, error) {
 	b.maybeWriteHeader()
-	n, err := b.ResponseWriter.Write(buf)
+	n, err := b.w.Write(buf)
 	if b.tee != nil {
 		_, err2 := b.tee.Write(buf[:n])
 		if err == nil {
@@ -169,3 +202,5 @@ func (b *responseWriter) Status() int {
 func (b *responseWriter) BytesWritten() int {
 	return b.bytes
 }
+
+var _ = http.ResponseWriter(&responseWriter{})

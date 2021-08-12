@@ -169,3 +169,52 @@ func TestHash(t *testing.T) {
 	h2 := stampede.StringToHash("123")
 	assert.Equal(t, uint64(4353148100880623749), h2)
 }
+
+func TestIssue6_BypassCORSHeaders(t *testing.T) {
+	var numRequests = 30
+
+	var expectedStatus int = 200
+	var expectedBody = []byte("hi")
+
+	app := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "example.com")
+		w.WriteHeader(expectedStatus)
+		w.Write(expectedBody)
+	}
+
+	h := stampede.Handler(512, 1*time.Second)
+
+	ts := httptest.NewServer(h(http.HandlerFunc(app)))
+	defer ts.Close()
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Get(ts.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			body, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if string(body) != string(expectedBody) {
+				t.Error("expecting response body:", string(expectedBody))
+			}
+
+			if resp.StatusCode != expectedStatus {
+				t.Error("expecting response status:", expectedStatus)
+			}
+
+			assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+		}()
+	}
+
+	wg.Wait()
+}
