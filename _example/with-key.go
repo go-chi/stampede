@@ -1,12 +1,10 @@
 package main
 
 import (
-	"github.com/cespare/xxhash/v2"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/stampede"
 )
@@ -71,7 +69,7 @@ func main() {
 	// Include anything sensitive or user specific, e.g. Authorization Token
 	customKeyFunc := func(r *http.Request) uint64 {
 		token := r.Header.Get("Authorization")
-		return StringToHash(r.Method, strings.ToLower(strings.ToLower(token)))
+		return stampede.StringToHash(r.Method, strings.ToLower(strings.ToLower(token)))
 	}
 	cached := stampede.HandlerWithKey(512, 1*time.Second, customKeyFunc)
 
@@ -84,12 +82,4 @@ func main() {
 	})
 
 	http.ListenAndServe(":3333", r)
-}
-
-func StringToHash(s ...string) uint64 {
-	d := xxhash.New()
-	for _, v := range s {
-		d.WriteString(v)
-	}
-	return d.Sum64()
 }
