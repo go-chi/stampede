@@ -32,6 +32,10 @@ type Cache struct {
 	callGroup singleflight.Group
 }
 
+func (c *Cache) Flush() *lru.Cache {
+	return c.values
+}
+
 func (c *Cache) Get(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
 	return c.get(ctx, key, false, fn)
 }

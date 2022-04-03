@@ -22,7 +22,23 @@ var stripOutHeaders = []string{
 	"Access-Control-Request-Method",
 }
 
-func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
+type m struct {
+	Cache *Cache
+}
+
+func NewM() *m {
+	return &m{}
+}
+
+func (mw *m) SetCache(c *Cache) {
+	mw.Cache = c
+}
+
+func (mw *m) initCache(cacheSize int, ttl time.Duration) {
+	mw.Cache = NewCache(cacheSize, ttl, ttl*2)
+}
+
+func (mw *m) Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
 	defaultKeyFunc := func(r *http.Request) uint64 {
 		// Read the request payload, and then setup buffer for future reader
 		var buf []byte
@@ -36,10 +52,10 @@ func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.H
 		return key
 	}
 
-	return HandlerWithKey(cacheSize, ttl, defaultKeyFunc, paths...)
+	return mw.HandlerWithKey(cacheSize, ttl, defaultKeyFunc, paths...)
 }
 
-func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64, paths ...string) func(next http.Handler) http.Handler {
+func (mw *m) HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64, paths ...string) func(next http.Handler) http.Handler {
 	// mapping of url paths that are cacheable by the stampede handler
 	pathMap := map[string]struct{}{}
 	for _, path := range paths {
@@ -53,7 +69,7 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Reque
 	// executes, and the remaining handlers will use the response from
 	// the first request. The content thereafter will be cached for up to
 	// ttl time for subsequent requests for further caching.
-	h := stampede(cacheSize, ttl, keyFunc)
+	h := mw.stampede(cacheSize, ttl, keyFunc)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +92,8 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Reque
 	}
 }
 
-func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64) func(next http.Handler) http.Handler {
-	cache := NewCache(cacheSize, ttl, ttl*2)
+func (mw *m) stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64) func(next http.Handler) http.Handler {
+	cache := mw.Cache
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
