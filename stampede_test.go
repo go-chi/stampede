@@ -163,6 +163,9 @@ func TestHandler(t *testing.T) {
 func TestHash(t *testing.T) {
 	h1 := stampede.BytesToHash([]byte{1, 2, 3})
 	assert.Equal(t, uint64(8376154270085342629), h1)
+
+	h2 := stampede.StringToHash("123")
+	assert.Equal(t, uint64(4353148100880623749), h2)
 }
 
 func TestIssue6_BypassCORSHeaders(t *testing.T) {

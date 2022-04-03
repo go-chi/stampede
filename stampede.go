@@ -123,3 +123,11 @@ func BytesToHash(b ...[]byte) uint64 {
 	}
 	return d.Sum64()
 }
+
+func StringToHash(s ...string) uint64 {
+	d := xxhash.New()
+	for _, v := range s {
+		d.WriteString(v)
+	}
+	return d.Sum64()
+}
