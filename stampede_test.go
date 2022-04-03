@@ -248,3 +248,39 @@ func TestIssue6_BypassCORSHeaders(t *testing.T) {
 	// expect to have only one actual hit
 	assert.Equal(t, uint64(1), count)
 }
+
+func TestPanic(t *testing.T) {
+	mux := http.NewServeMux()
+	middleware := stampede.Handler(100, 1*time.Hour)
+	mux.Handle("/", middleware(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		t.Log(r.Method, r.URL)
+	})))
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	{
+		req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		t.Log(resp.StatusCode)
+	}
+	{
+		req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		t.Log(resp.StatusCode)
+	}
+}
