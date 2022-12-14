@@ -56,7 +56,7 @@ var (
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {	
-	data, err := reqCache.Get(r.URL.Path, fetchData)
+	data, err := reqCache.Get(r.Context(), r.URL.Path, fetchData)
 	if err != nil {	
 		w.WriteHeader(503)
 		return	
