@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -86,10 +87,22 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 			key := keyFunc(r)
 
 			// mark the request that actually processes the response
-			first := false
+			var (
+				err      error
+				panicErr error
+				first    bool
+				val      interface{}
+			)
 
 			// process request (single flight)
-			val, err := cache.GetFresh(r.Context(), key, func(ctx context.Context) (interface{}, error) {
+			val, err = cache.GetFresh(r.Context(), key, func(ctx context.Context) (interface{}, error) {
+				defer func() {
+					// need a panic recoverer as separate recoverer middleware can't catch panics in new goroutine
+					if r := recover(); r != nil {
+						panicErr = fmt.Errorf("recovered panicking request:%#v, stack:%s", r, string(debug.Stack()))
+					}
+				}()
+
 				first = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
@@ -107,6 +120,11 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 				}
 				return val, nil
 			})
+
+			// handle panic for first or other listeners
+			if panicErr != nil {
+				panic(fmt.Sprintf("stampede: encountered unexpected panic, %v", panicErr))
+			}
 
 			// the first request to trigger the fetch should return as it's already
 			// responded to the client
