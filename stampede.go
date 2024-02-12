@@ -60,6 +60,7 @@ func (c *Cache[K, V]) get(ctx context.Context, key K, freshOnly bool, fn singlef
 	}
 
 	// value exists and is stale, and we're OK with serving it stale while updating in the background
+	// note: stale means its still okay, but not fresh. but if its expired, then it means its useless.
 	if ok && !freshOnly && !val.IsExpired() {
 		// TODO: technically could be a stampede of goroutines here if the value is expired
 		// and we're OK with serving it stale
@@ -67,7 +68,7 @@ func (c *Cache[K, V]) get(ctx context.Context, key K, freshOnly bool, fn singlef
 		return val.Value(), nil
 	}
 
-	// value doesn't exist or is expired, or is stale and we need it fresh - sync update
+	// value doesn't exist or is expired, or is stale and we need it fresh (freshOnly:true) - sync update
 	v, _, err := c.Set(ctx, key, fn)
 	return v, err
 }
@@ -99,16 +100,10 @@ type value[V any] struct {
 }
 
 func (v *value[V]) IsFresh() bool {
-	if v == nil {
-		return false
-	}
 	return v.bestBefore.After(time.Now())
 }
 
 func (v *value[V]) IsExpired() bool {
-	if v == nil {
-		return true
-	}
 	return v.expiry.Before(time.Now())
 }
 

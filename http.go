@@ -75,7 +75,7 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Reque
 }
 
 func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64) func(next http.Handler) http.Handler {
-	cache := NewCache(cacheSize, ttl, ttl*2)
+	cache := NewCacheKV[uint64, responseValue](cacheSize, ttl, ttl*2)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,9 +87,7 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 			first := false
 
 			// process request (single flight)
-			val, err := cache.GetFresh(r.Context(), key, func() (any, error) {
-				// NOTE: beware of context ... etc.. with singleflight (review etc... TODOODODDD)
-
+			respVal, err := cache.GetFresh(r.Context(), key, func() (responseValue, error) {
 				first = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
@@ -116,22 +114,18 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 
 			// handle response for other listeners
 			if err != nil {
+				// TODO: perhaps just log error and execute standard handler..?
 				panic(fmt.Sprintf("stampede: fail to get value, %v", err))
 			}
 
-			resp, ok := val.(responseValue)
-			if !ok {
-				panic("stampede: handler received unexpected response value type")
-			}
-
-			if resp.skip {
+			if respVal.skip {
 				return
 			}
 
 			header := w.Header()
 
 		nextHeader:
-			for k := range resp.headers {
+			for k := range respVal.headers {
 				for _, match := range stripOutHeaders {
 					// Prevent any header in stripOutHeaders to override the current
 					// value of that header. This is important when you don't want a
@@ -142,11 +136,11 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 						continue nextHeader
 					}
 				}
-				header[k] = resp.headers[k]
+				header[k] = respVal.headers[k]
 			}
 
-			w.WriteHeader(resp.status)
-			w.Write(resp.body)
+			w.WriteHeader(respVal.status)
+			w.Write(respVal.body)
 		})
 	}
 }

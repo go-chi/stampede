@@ -3,7 +3,7 @@ module github.com/go-chi/stampede
 go 1.20
 
 require (
-	github.com/cespare/xxhash/v2 v2.1.2
+	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/go-chi/cors v1.2.0
 	github.com/goware/singleflight v0.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
