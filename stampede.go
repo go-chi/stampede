@@ -6,81 +6,82 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/go-chi/stampede/singleflight"
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/goware/singleflight"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
 // single data fetch operation per expired / missing key regardless of number of requests to that key.
 
-func NewCache(size int, freshFor, ttl time.Duration) *Cache {
-	values, _ := lru.New(size)
-	return &Cache{
+func NewCache(size int, freshFor, ttl time.Duration) *Cache[any, any] {
+	return NewCacheKV[any, any](size, freshFor, ttl)
+}
+
+func NewCacheKV[K comparable, V any](size int, freshFor, ttl time.Duration) *Cache[K, V] {
+	values, _ := lru.New[K, value[V]](size)
+	return &Cache[K, V]{
 		freshFor: freshFor,
 		ttl:      ttl,
 		values:   values,
 	}
 }
 
-type Cache struct {
-	values *lru.Cache
+type Cache[K comparable, V any] struct {
+	values *lru.Cache[K, value[V]]
 
 	freshFor time.Duration
 	ttl      time.Duration
 
 	mu        sync.RWMutex
-	callGroup singleflight.Group
+	callGroup singleflight.Group[K, V]
 }
 
-func (c *Cache) Get(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+func (c *Cache[K, V]) Get(ctx context.Context, key K, fn singleflight.DoFunc[V]) (V, error) {
 	return c.get(ctx, key, false, fn)
 }
 
-func (c *Cache) GetFresh(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+func (c *Cache[K, V]) GetFresh(ctx context.Context, key K, fn singleflight.DoFunc[V]) (V, error) {
 	return c.get(ctx, key, true, fn)
 }
 
-func (c *Cache) Set(ctx context.Context, key interface{}, fn func(ctx context.Context) (interface{}, error)) (interface{}, bool, error) {
-	return c.callGroup.Do(ctx, key, c.set(key, fn))
+func (c *Cache[K, V]) Set(ctx context.Context, key K, fn singleflight.DoFunc[V]) (V, bool, error) {
+	v, err, shared := c.callGroup.Do(key, c.set(key, fn))
+	return v, shared, err
 }
 
-func (c *Cache) get(ctx context.Context, key interface{}, freshOnly bool, fn func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+func (c *Cache[K, V]) get(ctx context.Context, key K, freshOnly bool, fn singleflight.DoFunc[V]) (V, error) {
 	c.mu.RLock()
-	v, ok := c.values.Get(key)
+	val, ok := c.values.Get(key)
 	c.mu.RUnlock()
 
-	var val value
-	if ok {
-		if val, ok = v.(value); !ok {
-			panic("stampede: invalid cache value")
-		}
-	}
-
 	// value exists and is fresh - just return
-	if val.IsFresh() {
+	if ok && val.IsFresh() {
 		return val.Value(), nil
 	}
 
 	// value exists and is stale, and we're OK with serving it stale while updating in the background
-	if !freshOnly && !val.IsExpired() {
+	// note: stale means its still okay, but not fresh. but if its expired, then it means its useless.
+	if ok && !freshOnly && !val.IsExpired() {
+		// TODO: technically could be a stampede of goroutines here if the value is expired
+		// and we're OK with serving it stale
 		go c.Set(ctx, key, fn)
 		return val.Value(), nil
 	}
 
-	// value doesn't exist or is expired, or is stale and we need it fresh - sync update
+	// value doesn't exist or is expired, or is stale and we need it fresh (freshOnly:true) - sync update
 	v, _, err := c.Set(ctx, key, fn)
 	return v, err
 }
 
-func (c *Cache) set(key interface{}, fn singleflight.DoFunc) singleflight.DoFunc {
-	return singleflight.DoFunc(func(ctx context.Context) (interface{}, error) {
-		val, err := fn(ctx)
+func (c *Cache[K, V]) set(key K, fn singleflight.DoFunc[V]) singleflight.DoFunc[V] {
+	return singleflight.DoFunc[V](func() (V, error) {
+		val, err := fn()
 		if err != nil {
-			return nil, err
+			return val, err
 		}
 
 		c.mu.Lock()
-		c.values.Add(key, value{
+		c.values.Add(key, value[V]{
 			v:          val,
 			expiry:     time.Now().Add(c.ttl),
 			bestBefore: time.Now().Add(c.freshFor),
@@ -91,28 +92,22 @@ func (c *Cache) set(key interface{}, fn singleflight.DoFunc) singleflight.DoFunc
 	})
 }
 
-type value struct {
-	v interface{}
+type value[V any] struct {
+	v V
 
 	bestBefore time.Time // cache entry freshness cutoff
 	expiry     time.Time // cache entry time to live cutoff
 }
 
-func (v *value) IsFresh() bool {
-	if v == nil {
-		return false
-	}
+func (v *value[V]) IsFresh() bool {
 	return v.bestBefore.After(time.Now())
 }
 
-func (v *value) IsExpired() bool {
-	if v == nil {
-		return true
-	}
+func (v *value[V]) IsExpired() bool {
 	return v.expiry.Before(time.Now())
 }
 
-func (v *value) Value() interface{} {
+func (v *value[V]) Value() V {
 	return v.v
 }
 

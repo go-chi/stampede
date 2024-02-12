@@ -2,7 +2,7 @@ package stampede_test
 
 import (
 	"context"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +38,7 @@ func TestGet(t *testing.T) {
 			go func() {
 				defer wg.Done()
 
-				val, err := cache.Get(ctx, "t1", func(ctx context.Context) (interface{}, error) {
+				val, err := cache.Get(ctx, "t1", func() (any, error) {
 					t.Log("cache.Get(t1, ...)")
 
 					// some extensive op..
@@ -125,7 +125,7 @@ func TestHandler(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +168,7 @@ func TestHash(t *testing.T) {
 	assert.Equal(t, uint64(4353148100880623749), h2)
 }
 
-func TestIssue6_BypassCORSHeaders(t *testing.T) {
+func TestBypassCORSHeaders(t *testing.T) {
 	var expectedStatus int = 200
 	var expectedBody = []byte("hi")
 
@@ -200,53 +200,59 @@ func TestIssue6_BypassCORSHeaders(t *testing.T) {
 	ts := httptest.NewServer(c(h(http.HandlerFunc(app))))
 	defer ts.Close()
 
-	var wg sync.WaitGroup
-	var domainsHit = map[string]bool{}
+	var mu sync.Mutex
 
-	for _, domain := range domains {
-		wg.Add(1)
-		go func(domain string) {
-			defer wg.Done()
+	for i := 0; i < 10; i++ {
+		var wg sync.WaitGroup
+		var domainsHit = map[string]bool{}
 
-			req, err := http.NewRequest("GET", ts.URL, nil)
-			assert.NoError(t, err)
-			req.Header.Set("Origin", domain)
+		for _, domain := range domains {
+			wg.Add(1)
+			go func(domain string) {
+				defer wg.Done()
 
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
+				req, err := http.NewRequest("GET", ts.URL, nil)
+				assert.NoError(t, err)
+				req.Header.Set("Origin", domain)
 
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			if string(body) != string(expectedBody) {
-				t.Error("expecting response body:", string(expectedBody))
-			}
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
 
-			if resp.StatusCode != expectedStatus {
-				t.Error("expecting response status:", expectedStatus)
-			}
+				if string(body) != string(expectedBody) {
+					t.Error("expecting response body:", string(expectedBody))
+				}
 
-			domainsHit[resp.Header.Get("Access-Control-Allow-Origin")] = true
+				if resp.StatusCode != expectedStatus {
+					t.Error("expecting response status:", expectedStatus)
+				}
 
-			assert.Equal(t, "wakka", resp.Header.Get("X-Another-Header"))
+				mu.Lock()
+				domainsHit[resp.Header.Get("Access-Control-Allow-Origin")] = true
+				mu.Unlock()
 
-		}(domain)
+				assert.Equal(t, "wakka", resp.Header.Get("X-Another-Header"))
+
+			}(domain)
+		}
+
+		wg.Wait()
+
+		// expect all domains to be returned and recorded in domainsHit
+		for _, domain := range domains {
+			assert.True(t, domainsHit[domain])
+		}
+
+		// expect to have only one actual hit
+		assert.Equal(t, uint64(1), count)
 	}
-
-	wg.Wait()
-
-	// expect all domains to be returned and recorded in domainsHit
-	for _, domain := range domains {
-		assert.True(t, domainsHit[domain])
-	}
-
-	// expect to have only one actual hit
-	assert.Equal(t, uint64(1), count)
 }
 
 func TestPanic(t *testing.T) {
