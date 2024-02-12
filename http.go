@@ -2,10 +2,8 @@ package stampede
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
@@ -27,8 +25,8 @@ func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.H
 		// Read the request payload, and then setup buffer for future reader
 		var buf []byte
 		if r.Body != nil {
-			buf, _ = ioutil.ReadAll(r.Body)
-			r.Body = ioutil.NopCloser(bytes.NewBuffer(buf))
+			buf, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewBuffer(buf))
 		}
 
 		// Prepare cache key based on request URL path and the request data payload.
@@ -89,7 +87,9 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 			first := false
 
 			// process request (single flight)
-			val, err := cache.GetFresh(r.Context(), key, func(ctx context.Context) (interface{}, error) {
+			val, err := cache.GetFresh(r.Context(), key, func() (any, error) {
+				// NOTE: beware of context ... etc.. with singleflight (review etc... TODOODODDD)
+
 				first = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}

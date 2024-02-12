@@ -2,7 +2,7 @@ package stampede_test
 
 import (
 	"context"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +38,7 @@ func TestGet(t *testing.T) {
 			go func() {
 				defer wg.Done()
 
-				val, err := cache.Get(ctx, "t1", func(ctx context.Context) (interface{}, error) {
+				val, err := cache.Get(ctx, "t1", func() (any, error) {
 					t.Log("cache.Get(t1, ...)")
 
 					// some extensive op..
@@ -125,7 +125,7 @@ func TestHandler(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -217,7 +217,7 @@ func TestIssue6_BypassCORSHeaders(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatal(err)
 			}
