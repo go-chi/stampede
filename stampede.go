@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/goware/singleflight"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/zeebo/xxh3"
 )
 
 // Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
@@ -112,17 +112,31 @@ func (v *value[V]) Value() V {
 }
 
 func BytesToHash(b ...[]byte) uint64 {
-	d := xxhash.New()
-	for _, v := range b {
-		d.Write(v)
+	d := xxh3.New()
+	if len(b) == 0 {
+		return 0
+	}
+	if len(b) == 1 {
+		d.Write(b[0])
+	} else {
+		for _, v := range b {
+			d.Write(v)
+		}
 	}
 	return d.Sum64()
 }
 
 func StringToHash(s ...string) uint64 {
-	d := xxhash.New()
-	for _, v := range s {
-		d.WriteString(v)
+	d := xxh3.New()
+	if len(s) == 0 {
+		return 0
+	}
+	if len(s) == 1 {
+		d.WriteString(s[0])
+	} else {
+		for _, v := range s {
+			d.WriteString(v)
+		}
 	}
 	return d.Sum64()
 }
