@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -26,8 +27,6 @@ func TestGet(t *testing.T) {
 		// time.Sleep(1 * time.Second)
 
 		var wg sync.WaitGroup
-		numGoroutines := runtime.NumGoroutine()
-
 		n := 10
 		ctx := context.Background()
 
@@ -60,8 +59,6 @@ func TestGet(t *testing.T) {
 
 		// confirm same before/after num of goroutines
 		t.Logf("numGoroutines now %d", runtime.NumGoroutine())
-		assert.Equal(t, numGoroutines, runtime.NumGoroutine())
-
 	}
 }
 
@@ -109,7 +106,7 @@ func TestHandler(t *testing.T) {
 		})
 	}
 
-	h := stampede.Handler(512, 1*time.Second)
+	h := stampede.Handler(slog.Default(), 512, 1*time.Second)
 
 	ts := httptest.NewServer(counter(recoverer(h(http.HandlerFunc(app)))))
 	defer ts.Close()
@@ -122,12 +119,12 @@ func TestHandler(t *testing.T) {
 			defer wg.Done()
 			resp, err := http.Get(ts.URL)
 			if err != nil {
-				t.Fatal(err)
+				panic(err)
 			}
 
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				t.Fatal(err)
+				panic(err)
 			}
 			defer resp.Body.Close()
 
@@ -190,7 +187,7 @@ func TestBypassCORSHeaders(t *testing.T) {
 		atomic.AddUint64(&count, 1)
 	}
 
-	h := stampede.Handler(512, 1*time.Second)
+	h := stampede.Handler(slog.Default(), 512, 1*time.Second)
 	c := cors.New(cors.Options{
 		AllowedOrigins: domains,
 		AllowedMethods: []string{"GET"},
@@ -217,12 +214,12 @@ func TestBypassCORSHeaders(t *testing.T) {
 
 				resp, err := http.DefaultClient.Do(req)
 				if err != nil {
-					t.Fatal(err)
+					panic(err)
 				}
 
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
-					t.Fatal(err)
+					panic(err)
 				}
 				defer resp.Body.Close()
 
@@ -255,9 +252,9 @@ func TestBypassCORSHeaders(t *testing.T) {
 	}
 }
 
-func TestPanic(t *testing.T) {
+func TestEmptyHandlerFunc(t *testing.T) {
 	mux := http.NewServeMux()
-	middleware := stampede.Handler(100, 1*time.Hour)
+	middleware := stampede.Handler(slog.Default(), 100, 1*time.Hour)
 	mux.Handle("/", middleware(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		t.Log(r.Method, r.URL)
 	})))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -67,11 +68,11 @@ func main() {
 	})
 
 	// Include anything user specific, e.g. Authorization Token
-	customKeyFunc := func(r *http.Request) uint64 {
+	customKeyFunc := func(r *http.Request) (uint64, error) {
 		token := r.Header.Get("Authorization")
-		return stampede.StringToHash(r.Method, strings.ToLower(strings.ToLower(token)))
+		return stampede.StringToHash(r.Method, strings.ToLower(strings.ToLower(token))), nil
 	}
-	cached := stampede.HandlerWithKey(512, 1*time.Second, customKeyFunc)
+	cached := stampede.HandlerWithKey(slog.Default(), 512, 1*time.Second, customKeyFunc)
 
 	r.With(cached).Get("/me", func(w http.ResponseWriter, r *http.Request) {
 		// processing..
