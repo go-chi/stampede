@@ -2,42 +2,35 @@ package stampede
 
 import (
 	"bytes"
-	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 )
 
-var stripOutHeaders = []string{
-	"Access-Control-Allow-Credentials",
-	"Access-Control-Allow-Headers",
-	"Access-Control-Allow-Methods",
-	"Access-Control-Allow-Origin",
-	"Access-Control-Expose-Headers",
-	"Access-Control-Max-Age",
-	"Access-Control-Request-Headers",
-	"Access-Control-Request-Method",
-}
-
-func Handler(cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
-	defaultKeyFunc := func(r *http.Request) uint64 {
+func Handler(logger *slog.Logger, cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
+	defaultKeyFunc := func(r *http.Request) (uint64, error) {
 		// Read the request payload, and then setup buffer for future reader
+		var err error
 		var buf []byte
 		if r.Body != nil {
-			buf, _ = io.ReadAll(r.Body)
+			buf, err = io.ReadAll(r.Body)
+			if err != nil {
+				return 0, err
+			}
 			r.Body = io.NopCloser(bytes.NewBuffer(buf))
 		}
 
 		// Prepare cache key based on request URL path and the request data payload.
 		key := BytesToHash([]byte(strings.ToLower(r.URL.Path)), buf)
-		return key
+		return key, nil
 	}
 
-	return HandlerWithKey(cacheSize, ttl, defaultKeyFunc, paths...)
+	return HandlerWithKey(logger, cacheSize, ttl, defaultKeyFunc, paths...)
 }
 
-func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64, paths ...string) func(next http.Handler) http.Handler {
+func HandlerWithKey(logger *slog.Logger, cacheSize int, ttl time.Duration, keyFunc CacheKeyFunc, paths ...string) func(next http.Handler) http.Handler {
 	// mapping of url paths that are cacheable by the stampede handler
 	pathMap := map[string]struct{}{}
 	for _, path := range paths {
@@ -51,7 +44,7 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Reque
 	// executes, and the remaining handlers will use the response from
 	// the first request. The content thereafter will be cached for up to
 	// ttl time for subsequent requests for further caching.
-	h := stampede(cacheSize, ttl, keyFunc)
+	h := stampede(logger, cacheSize, ttl, keyFunc)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,20 +67,28 @@ func HandlerWithKey(cacheSize int, ttl time.Duration, keyFunc func(r *http.Reque
 	}
 }
 
-func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) uint64) func(next http.Handler) http.Handler {
+type CacheKeyFunc func(r *http.Request) (uint64, error)
+
+func stampede(logger *slog.Logger, cacheSize int, ttl time.Duration, keyFunc CacheKeyFunc) func(next http.Handler) http.Handler {
 	cache := NewCacheKV[uint64, responseValue](cacheSize, ttl, ttl*2)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 			// cache key for the request
-			key := keyFunc(r)
+			key, err := keyFunc(r)
+			if err != nil {
+				logger.Warn("stampede: fail to compute cache key", "err", err)
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			// mark the request that actually processes the response
 			first := false
 
-			// process request (single flight)
-			respVal, err := cache.GetFresh(r.Context(), key, func() (responseValue, error) {
+			// process request (single flight) – this will block all subsequent requests
+			// until the first request is processed
+			cachedVal, err := cache.GetFresh(r.Context(), key, func() (responseValue, error) {
 				first = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
@@ -101,7 +102,7 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 
 					// the handler may not write header and body in some logic,
 					// while writing only the body, an attempt is made to write the default header (http.StatusOK)
-					skip: ww.IsHeaderWrong(),
+					skip: !ww.IsValid(),
 				}
 				return val, nil
 			})
@@ -112,35 +113,37 @@ func stampede(cacheSize int, ttl time.Duration, keyFunc func(r *http.Request) ui
 				return
 			}
 
-			// handle response for other listeners
+			// handle response for subsequent requests
 			if err != nil {
-				// TODO: perhaps just log error and execute standard handler..?
-				panic(fmt.Sprintf("stampede: fail to get value, %v", err))
-			}
-
-			if respVal.skip {
+				logger.Error("stampede: fail to get value, serving standard request handler", "err", err)
+				next.ServeHTTP(w, r)
 				return
 			}
 
-			header := w.Header()
-
-		nextHeader:
-			for k := range respVal.headers {
-				for _, match := range stripOutHeaders {
-					// Prevent any header in stripOutHeaders to override the current
-					// value of that header. This is important when you don't want a
-					// header to affect all subsequent requests (for instance, when
-					// working with several CORS domains, you don't want the first domain
-					// to be recorded an to be printed in all responses)
-					if match == k {
-						continue nextHeader
-					}
-				}
-				header[k] = respVal.headers[k]
+			// if the handler did not write a header, then serve the next handler
+			// a standard request handler
+			if cachedVal.skip {
+				next.ServeHTTP(w, r)
+				return
 			}
 
-			w.WriteHeader(respVal.status)
-			w.Write(respVal.body)
+			// copy headers from the first request to the response writer
+			respHeader := w.Header()
+			for k, v := range cachedVal.headers {
+				// Prevent certain headers to override the current
+				// value of that header. This is important when you don't want a
+				// header to affect all subsequent requests (for instance, when
+				// working with several CORS domains, you don't want the first domain
+				// to be recorded an to be printed in all responses)
+				headerKey := strings.ToLower(k)
+				if strings.HasPrefix(headerKey, "access-control-") {
+					continue
+				}
+				respHeader[k] = v
+			}
+
+			w.WriteHeader(cachedVal.status)
+			w.Write(cachedVal.body)
 		})
 	}
 }
@@ -169,8 +172,8 @@ func (b *responseWriter) WriteHeader(code int) {
 	}
 }
 
-func (b *responseWriter) IsHeaderWrong() bool {
-	return !b.wroteHeader && (b.code < 100 || b.code > 999)
+func (b *responseWriter) IsValid() bool {
+	return b.wroteHeader && (b.code >= 100 && b.code < 999)
 }
 
 func (b *responseWriter) Write(buf []byte) (int, error) {
