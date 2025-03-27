@@ -27,7 +27,7 @@ func main() {
 		w.Write([]byte("index"))
 	})
 
-	cached := stampede.Handler(512, 1 * time.Second)
+	cached := stampede.Handler(slog.Default(), 512, 1 * time.Second)
 
 	r.With(cached).Get("/cached", func(w http.ResponseWriter, r *http.Request) {
 		// processing..
