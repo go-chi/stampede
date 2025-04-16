@@ -2,114 +2,156 @@ package stampede
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	cachestore "github.com/goware/cachestore2"
 )
 
-func Handler(logger *slog.Logger, cacheSize int, ttl time.Duration, paths ...string) func(next http.Handler) http.Handler {
-	defaultKeyFunc := func(r *http.Request) (uint64, error) {
-		// Read the request payload, and then setup buffer for future reader
+func Handler(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, options ...Option) func(next http.Handler) http.Handler {
+	return HandlerWithKey(logger, cacheBackend, ttl, nil, options...)
+}
+
+func HandlerWithKey(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, cacheKeyFunc CacheKeyFunc, options ...Option) func(next http.Handler) http.Handler {
+	opts := getOptions(ttl, options...)
+
+	// Combine various cache key functions into a single cache key value.
+	cacheKeyWithRequestHeaders := cacheKeyWithRequestHeaders(opts.HTTPCacheKeyRequestHeaders)
+
+	comboCacheKeyFunc := func(r *http.Request) (uint64, error) {
+		var cacheKey1, cacheKey2, cacheKey3, cacheKey4 uint64
 		var err error
-		var buf []byte
-		if r.Body != nil {
-			buf, err = io.ReadAll(r.Body)
+		cacheKey1, err = cacheKeyWithRequestURL(r)
+		if err != nil {
+			return 0, err
+		}
+		if opts.HTTPCacheKeyRequestBody {
+			cacheKey2, err = cacheKeyWithRequestBody(r)
 			if err != nil {
 				return 0, err
 			}
-			r.Body = io.NopCloser(bytes.NewBuffer(buf))
 		}
-
-		// Prepare cache key based on request URL path and the request data payload.
-		key := BytesToHash([]byte(strings.ToLower(r.URL.Path)), buf)
-		return key, nil
+		if len(opts.HTTPCacheKeyRequestHeaders) > 0 {
+			cacheKey3, err = cacheKeyWithRequestHeaders(r)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if cacheKeyFunc != nil {
+			cacheKey4, err = cacheKeyFunc(r)
+			if err != nil {
+				return 0, err
+			}
+		}
+		return cacheKey1 + cacheKey2 + cacheKey3 + cacheKey4, nil
 	}
 
-	return HandlerWithKey(logger, cacheSize, ttl, defaultKeyFunc, paths...)
-}
-
-func HandlerWithKey(logger *slog.Logger, cacheSize int, ttl time.Duration, keyFunc CacheKeyFunc, paths ...string) func(next http.Handler) http.Handler {
-	// mapping of url paths that are cacheable by the stampede handler
-	pathMap := map[string]struct{}{}
-	for _, path := range paths {
-		pathMap[strings.ToLower(path)] = struct{}{}
+	var cache cachestore.Store[responseValue]
+	if cacheBackend != nil {
+		cache = cachestore.OpenStore[responseValue](cacheBackend)
 	}
-
-	// Stampede handler with set ttl for how long content is fresh.
-	// Requests sent to this handler will be coalesced and in scenarios
-	// where there is a "stampede" or parallel requests for the same
-	// method and arguments, there will be just a single handler that
-	// executes, and the remaining handlers will use the response from
-	// the first request. The content thereafter will be cached for up to
-	// ttl time for subsequent requests for further caching.
-	h := stampede(logger, cacheSize, ttl, keyFunc)
+	h := stampedeHandler(logger, cache, comboCacheKeyFunc, opts)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Cache all paths, as whitelist has not been provided
-			if len(pathMap) == 0 {
-				h(next).ServeHTTP(w, r)
-				return
-			}
-
-			// Match specific whitelist of paths
-			if _, ok := pathMap[strings.ToLower(r.URL.Path)]; ok {
-				// stampede-cache the matching path
-				h(next).ServeHTTP(w, r)
-
-			} else {
-				// no caching
-				next.ServeHTTP(w, r)
-			}
+			h(next).ServeHTTP(w, r)
 		})
+	}
+}
+
+func cacheKeyWithRequestURL(r *http.Request) (uint64, error) {
+	return StringToHash(strings.ToLower(r.URL.Path)), nil
+}
+
+func cacheKeyWithRequestBody(r *http.Request) (uint64, error) {
+	// Skip request body caching for non-POST, PUT, PATCH requests.
+	// If you'd like to cache these, you can use the `HandlerWithKey`
+	// function which accepts a custom cache key function.
+	if r.Method != "POST" && r.Method != "PUT" && r.Method != "PATCH" {
+		return 0, nil
+	}
+
+	// Read the request payload, and then setup buffer for future reader
+	var err error
+	var buf []byte
+	if r.Body != nil {
+		buf, err = io.ReadAll(r.Body)
+		if err != nil {
+			return 0, err
+		}
+		r.Body = io.NopCloser(bytes.NewBuffer(buf))
+	}
+
+	// Prepare cache key based on the request data payload.
+	return BytesToHash(buf), nil
+}
+
+func cacheKeyWithRequestHeaders(headers []string) func(r *http.Request) (uint64, error) {
+	return func(r *http.Request) (uint64, error) {
+		if len(headers) == 0 {
+			return 0, nil
+		}
+		var keys []string
+		for _, header := range headers {
+			v := r.Header.Get(header)
+			if v == "" {
+				continue
+			}
+			keys = append(keys, fmt.Sprintf("%s:%s", strings.ToLower(header), v))
+		}
+		return StringToHash(keys...), nil
 	}
 }
 
 type CacheKeyFunc func(r *http.Request) (uint64, error)
 
-func stampede(logger *slog.Logger, cacheSize int, ttl time.Duration, keyFunc CacheKeyFunc) func(next http.Handler) http.Handler {
-	cache := NewCacheKV[uint64, responseValue](cacheSize, ttl, ttl*2)
+func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue], cacheKeyFunc CacheKeyFunc, options *Options) func(next http.Handler) http.Handler {
+	stampede := NewStampede(logger, cache)
+	stampede.SetOptions(options)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-			// cache key for the request
-			key, err := keyFunc(r)
+			cacheKey, err := cacheKeyFunc(r)
 			if err != nil {
 				logger.Warn("stampede: fail to compute cache key", "err", err)
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// mark the request that actually processes the response
-			first := false
+			firstRequest := false
 
-			// process request (single flight) – this will block all subsequent requests
-			// until the first request is processed
-			cachedVal, err := cache.GetFresh(r.Context(), key, func() (responseValue, error) {
-				first = true
+			cachedVal, err := stampede.Do(context.Background(), fmt.Sprintf("http:%d", cacheKey), func() (responseValue, *time.Duration, error) {
+				firstRequest = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
 
 				next.ServeHTTP(ww, r)
 
 				val := responseValue{
-					headers: ww.Header(),
-					status:  ww.Status(),
-					body:    buf.Bytes(),
+					Headers: ww.Header(),
+					Status:  ww.Status(),
+					Body:    buf.Bytes(),
 
 					// the handler may not write header and body in some logic,
 					// while writing only the body, an attempt is made to write the default header (http.StatusOK)
-					skip: !ww.IsValid(),
+					Skip: !ww.IsValid(),
 				}
-				return val, nil
+
+				var ttl *time.Duration
+				if options.HTTPStatusTTL != nil {
+					t := options.HTTPStatusTTL(ww.Status())
+					ttl = &t
+				}
+
+				return val, ttl, nil
 			})
 
-			// the first request to trigger the fetch should return as it's already
-			// responded to the client
-			if first {
+			if firstRequest {
 				return
 			}
 
@@ -122,38 +164,42 @@ func stampede(logger *slog.Logger, cacheSize int, ttl time.Duration, keyFunc Cac
 
 			// if the handler did not write a header, then serve the next handler
 			// a standard request handler
-			if cachedVal.skip {
+			if cachedVal.Skip {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// copy headers from the first request to the response writer
 			respHeader := w.Header()
-			for k, v := range cachedVal.headers {
+			for k, v := range cachedVal.Headers {
 				// Prevent certain headers to override the current
 				// value of that header. This is important when you don't want a
 				// header to affect all subsequent requests (for instance, when
 				// working with several CORS domains, you don't want the first domain
-				// to be recorded an to be printed in all responses)
+				// to be recorded an to be printed in all responses).
+				// Other examples include x-ratelimit or set-cookie. We therefore skip
+				// returning any header with "x-ratelimit" prefix, "access-control-" prefix, or "set-cookie".
+				//
+				// TODO: we can move these options to the `Options` struct, with the below as defaults.
 				headerKey := strings.ToLower(k)
-				if strings.HasPrefix(headerKey, "access-control-") {
+				if strings.HasPrefix(headerKey, "x-ratelimit") || strings.HasPrefix(headerKey, "access-control-") || headerKey == "set-cookie" {
 					continue
 				}
 				respHeader[k] = v
 			}
+			respHeader.Set("x-cache", "hit")
 
-			w.WriteHeader(cachedVal.status)
-			w.Write(cachedVal.body)
+			w.WriteHeader(cachedVal.Status)
+			w.Write(cachedVal.Body)
 		})
 	}
 }
 
-// responseValue is response payload we will be coalescing
 type responseValue struct {
-	headers http.Header
-	status  int
-	body    []byte
-	skip    bool
+	Headers http.Header `json:"headers"`
+	Status  int         `json:"status"`
+	Body    []byte      `json:"body"`
+	Skip    bool        `json:"skip"`
 }
 
 type responseWriter struct {

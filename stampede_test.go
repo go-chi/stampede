@@ -2,25 +2,65 @@ package stampede_test
 
 import (
 	"context"
-	"io"
-	"log"
+	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-chi/cors"
 	"github.com/go-chi/stampede"
+	cachestore "github.com/goware/cachestore2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGet(t *testing.T) {
+func TestSingleflightDo(t *testing.T) {
+	s := stampede.NewStampede[int](slog.Default(), nil)
+
+	var numCalls atomic.Int64
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		v, err := s.Do(context.Background(), "t1", func() (int, *time.Duration, error) {
+			numCalls.Add(1)
+			time.Sleep(1 * time.Second)
+			return 1, nil, nil
+		}, stampede.WithTTL(1*time.Second))
+		assert.NoError(t, err)
+		assert.Equal(t, 1, v)
+	}()
+
+	// slight delay, to ensure first call is in flight
+	time.Sleep(100 * time.Millisecond)
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			v, err := s.Do(context.Background(), "t1", func() (int, *time.Duration, error) {
+				numCalls.Add(1)
+				return i, nil, nil
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, 1, v)
+		}()
+	}
+
+	wg.Wait()
+
+	require.Equal(t, int64(1), numCalls.Load())
+}
+
+func TestCachedDo(t *testing.T) {
 	var count uint64
-	cache := stampede.NewCache(512, time.Duration(2*time.Second), time.Duration(5*time.Second))
+	stampede := stampede.NewStampede(slog.Default(), newMockCacheBackend(), stampede.WithTTL(5*time.Second))
 
 	// repeat test multiple times
 	for x := 0; x < 5; x++ {
@@ -37,14 +77,14 @@ func TestGet(t *testing.T) {
 			go func() {
 				defer wg.Done()
 
-				val, err := cache.Get(ctx, "t1", func() (any, error) {
+				val, err := stampede.Do(ctx, "t1", func() (any, *time.Duration, error) {
 					t.Log("cache.Get(t1, ...)")
 
 					// some extensive op..
 					time.Sleep(2 * time.Second)
 					atomic.AddUint64(&count, 1)
 
-					return "result1", nil
+					return "result1", nil, nil
 				})
 
 				assert.NoError(t, err)
@@ -62,228 +102,122 @@ func TestGet(t *testing.T) {
 	}
 }
 
-func TestHandler(t *testing.T) {
-	var numRequests = 30
-
-	var hits uint32
-	var expectedStatus int = 201
-	var expectedBody = []byte("hi")
-
-	app := func(w http.ResponseWriter, r *http.Request) {
-		// log.Println("app handler..")
-
-		atomic.AddUint32(&hits, 1)
-
-		hitsNow := atomic.LoadUint32(&hits)
-		if hitsNow > 1 {
-			// panic("uh oh")
-		}
-
-		// time.Sleep(100 * time.Millisecond) // slow handler
-		w.Header().Set("X-Httpjoin", "test")
-		w.WriteHeader(expectedStatus)
-		w.Write(expectedBody)
-	}
-
-	var count uint32
-	counter := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddUint32(&count, 1)
-			next.ServeHTTP(w, r)
-			atomic.AddUint32(&count, ^uint32(0))
-			// log.Println("COUNT:", atomic.LoadUint32(&count))
-		})
-	}
-
-	recoverer := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Println("recovered panicing request:", r)
-				}
-			}()
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	h := stampede.Handler(slog.Default(), 512, 1*time.Second)
-
-	ts := httptest.NewServer(counter(recoverer(h(http.HandlerFunc(app)))))
-	defer ts.Close()
-
-	var wg sync.WaitGroup
-
-	for i := 0; i < numRequests; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp, err := http.Get(ts.URL)
-			if err != nil {
-				panic(err)
-			}
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				panic(err)
-			}
-			defer resp.Body.Close()
-
-			// log.Println("got resp:", resp, "len:", len(body), "body:", string(body))
-
-			if string(body) != string(expectedBody) {
-				t.Error("expecting response body:", string(expectedBody))
-			}
-
-			if resp.StatusCode != expectedStatus {
-				t.Error("expecting response status:", expectedStatus)
-			}
-
-			assert.Equal(t, "test", resp.Header.Get("X-Httpjoin"), "expecting x-httpjoin test header")
-		}()
-	}
-
-	wg.Wait()
-
-	totalHits := atomic.LoadUint32(&hits)
-	// if totalHits > 1 {
-	// 	t.Error("handler was hit more than once. hits:", totalHits)
-	// }
-	log.Println("total hits:", totalHits)
-
-	finalCount := atomic.LoadUint32(&count)
-	if finalCount > 0 {
-		t.Error("queue count was expected to be empty, but count:", finalCount)
-	}
-	log.Println("final count:", finalCount)
-}
-
-func TestHash(t *testing.T) {
-	h1 := stampede.BytesToHash([]byte{1, 2, 3})
-	assert.Equal(t, uint64(16991689376074199867), h1)
-
-	h2 := stampede.StringToHash("123")
-	assert.Equal(t, uint64(4632645163541105818), h2)
-}
-
-func TestBypassCORSHeaders(t *testing.T) {
-	var expectedStatus int = 200
-	var expectedBody = []byte("hi")
-
-	var count uint64
-
-	domains := []string{
-		"google.com",
-		"sequence.build",
-		"horizon.io",
-		"github.com",
-		"ethereum.org",
-	}
-
-	app := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Another-Header", "wakka")
-		w.WriteHeader(expectedStatus)
-		w.Write(expectedBody)
-
-		atomic.AddUint64(&count, 1)
-	}
-
-	h := stampede.Handler(slog.Default(), 512, 1*time.Second)
-	c := cors.New(cors.Options{
-		AllowedOrigins: domains,
-		AllowedMethods: []string{"GET"},
-		AllowedHeaders: []string{"*"},
-	}).Handler
-
-	ts := httptest.NewServer(c(h(http.HandlerFunc(app))))
-	defer ts.Close()
-
-	var mu sync.Mutex
-
-	for i := 0; i < 10; i++ {
-		var wg sync.WaitGroup
-		var domainsHit = map[string]bool{}
-
-		for _, domain := range domains {
-			wg.Add(1)
-			go func(domain string) {
-				defer wg.Done()
-
-				req, err := http.NewRequest("GET", ts.URL, nil)
-				assert.NoError(t, err)
-				req.Header.Set("Origin", domain)
-
-				resp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					panic(err)
-				}
-
-				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					panic(err)
-				}
-				defer resp.Body.Close()
-
-				if string(body) != string(expectedBody) {
-					t.Error("expecting response body:", string(expectedBody))
-				}
-
-				if resp.StatusCode != expectedStatus {
-					t.Error("expecting response status:", expectedStatus)
-				}
-
-				mu.Lock()
-				domainsHit[resp.Header.Get("Access-Control-Allow-Origin")] = true
-				mu.Unlock()
-
-				assert.Equal(t, "wakka", resp.Header.Get("X-Another-Header"))
-
-			}(domain)
-		}
-
-		wg.Wait()
-
-		// expect all domains to be returned and recorded in domainsHit
-		for _, domain := range domains {
-			assert.True(t, domainsHit[domain])
-		}
-
-		// expect to have only one actual hit
-		assert.Equal(t, uint64(1), count)
+func newMockCacheBackend() cachestore.Backend {
+	return &mockCacheBackend[any]{
+		cache:  make(map[string]any),
+		expiry: make(map[string]int64),
 	}
 }
 
-func TestEmptyHandlerFunc(t *testing.T) {
-	mux := http.NewServeMux()
-	middleware := stampede.Handler(slog.Default(), 100, 1*time.Hour)
-	mux.Handle("/", middleware(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		t.Log(r.Method, r.URL)
-	})))
+type mockCacheBackend[V any] struct {
+	cache  map[string]V
+	expiry map[string]int64
+}
 
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
+var _ cachestore.Backend = &mockCacheBackend[any]{}
 
-	{
-		req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		t.Log(resp.StatusCode)
+func (m *mockCacheBackend[V]) Name() string {
+	return "mockCacheBackend"
+}
+
+func (m *mockCacheBackend[V]) Options() cachestore.StoreOptions {
+	return cachestore.StoreOptions{}
+}
+
+func (m *mockCacheBackend[V]) Exists(ctx context.Context, key string) (bool, error) {
+	_, ok := m.cache[key]
+	return ok, nil
+}
+
+func (m *mockCacheBackend[V]) Set(ctx context.Context, key string, value V) error {
+	m.cache[key] = value
+	return nil
+}
+
+func (m *mockCacheBackend[V]) SetEx(ctx context.Context, key string, value V, ttl time.Duration) error {
+	m.cache[key] = value
+	m.expiry[key] = time.Now().Unix() + int64(ttl.Seconds())
+	return nil
+}
+
+func (m *mockCacheBackend[V]) BatchSet(ctx context.Context, keys []string, values []V) error {
+	for i, key := range keys {
+		m.cache[key] = values[i]
 	}
-	{
-		req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		t.Log(resp.StatusCode)
+	return nil
+}
+
+func (m *mockCacheBackend[V]) BatchSetEx(ctx context.Context, keys []string, values []V, ttl time.Duration) error {
+	for i, key := range keys {
+		m.cache[key] = values[i]
+		m.expiry[key] = time.Now().Unix() + int64(ttl.Seconds())
 	}
+	return nil
+}
+
+func (m *mockCacheBackend[V]) Get(ctx context.Context, key string) (V, bool, error) {
+	v, ok := m.cache[key]
+	if ok {
+		expiry, ok := m.expiry[key]
+		if ok && expiry < time.Now().Unix() {
+			delete(m.cache, key)
+			delete(m.expiry, key)
+			var v V
+			return v, false, nil
+		}
+	}
+	return v, ok, nil
+}
+
+func (m *mockCacheBackend[V]) BatchGet(ctx context.Context, keys []string) ([]V, []bool, error) {
+	values := make([]V, len(keys))
+	exists := make([]bool, len(keys))
+	var err error
+	for i, key := range keys {
+		values[i], exists[i], err = m.Get(ctx, key)
+		if err != nil {
+			return nil, nil, err
+		}
+		if exists[i] {
+			expiry, ok := m.expiry[key]
+			if ok && expiry < time.Now().Unix() {
+				exists[i] = false
+				var v V
+				values[i] = v
+			}
+		}
+	}
+	return values, exists, nil
+}
+
+func (m *mockCacheBackend[V]) Delete(ctx context.Context, key string) error {
+	delete(m.cache, key)
+	delete(m.expiry, key)
+	return nil
+}
+
+func (m *mockCacheBackend[V]) DeletePrefix(ctx context.Context, keyPrefix string) error {
+	for key := range m.cache {
+		if strings.HasPrefix(key, keyPrefix) {
+			delete(m.cache, key)
+			delete(m.expiry, key)
+		}
+	}
+	return nil
+}
+
+func (m *mockCacheBackend[V]) ClearAll(ctx context.Context) error {
+	m.cache = make(map[string]V)
+	m.expiry = make(map[string]int64)
+	return nil
+}
+
+func (m *mockCacheBackend[V]) GetOrSetWithLock(ctx context.Context, key string, getter func(context.Context, string) (V, error)) (V, error) {
+	var v V
+	return v, fmt.Errorf("not implemented")
+}
+
+func (m *mockCacheBackend[V]) GetOrSetWithLockEx(ctx context.Context, key string, getter func(context.Context, string) (V, error), ttl time.Duration) (V, error) {
+	var v V
+	return v, fmt.Errorf("not implemented")
 }

@@ -2,113 +2,121 @@ package stampede
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
+	cachestore "github.com/goware/cachestore2"
 	"github.com/goware/singleflight"
-	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/zeebo/xxh3"
 )
 
-// Prevents cache stampede https://en.wikipedia.org/wiki/Cache_stampede by only running a
-// single data fetch operation per expired / missing key regardless of number of requests to that key.
+const (
+	// DefaultCacheTTL is the default TTL for cache entries. However,
+	// you can pass WithTTL(d) to set your own ttl, or pass
+	// WithSkipCache() to disable caching
+	DefaultCacheTTL = 1 * time.Minute
+)
 
-func NewCache(size int, freshFor, ttl time.Duration) *Cache[any, any] {
-	return NewCacheKV[any, any](size, freshFor, ttl)
-}
+func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options ...Option) *stampede[V] {
+	opts := &Options{}
+	for _, o := range options {
+		o(opts)
+	}
 
-func NewCacheKV[K comparable, V any](size int, freshFor, ttl time.Duration) *Cache[K, V] {
-	values, _ := lru.New[K, value[V]](size)
-	return &Cache[K, V]{
-		freshFor: freshFor,
-		ttl:      ttl,
-		values:   values,
+	return &stampede[V]{
+		logger:    logger,
+		cache:     cache,
+		callGroup: singleflight.Group[string, doResult[V]]{},
+		options:   opts,
 	}
 }
 
-type Cache[K comparable, V any] struct {
-	values *lru.Cache[K, value[V]]
-
-	freshFor time.Duration
-	ttl      time.Duration
-
+type stampede[V any] struct {
+	logger    *slog.Logger
+	cache     cachestore.Store[V]
+	callGroup singleflight.Group[string, doResult[V]]
+	options   *Options
 	mu        sync.RWMutex
-	callGroup singleflight.Group[K, V]
 }
 
-func (c *Cache[K, V]) Get(ctx context.Context, key K, fn func() (V, error)) (V, error) {
-	return c.get(ctx, key, false, fn)
+type doResult[V any] struct {
+	Value V
+	TTL   *time.Duration
 }
 
-func (c *Cache[K, V]) GetFresh(ctx context.Context, key K, fn func() (V, error)) (V, error) {
-	return c.get(ctx, key, true, fn)
-}
-
-func (c *Cache[K, V]) Set(ctx context.Context, key K, fn func() (V, error)) (V, bool, error) {
-	v, err, shared := c.callGroup.Do(key, c.set(key, fn))
-	return v, shared, err
-}
-
-func (c *Cache[K, V]) get(ctx context.Context, key K, freshOnly bool, fn func() (V, error)) (V, error) {
-	c.mu.RLock()
-	val, ok := c.values.Get(key)
-	c.mu.RUnlock()
-
-	// value exists and is fresh - just return
-	if ok && val.IsFresh() {
-		return val.Value(), nil
+func (s *stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Duration, error), options ...Option) (V, error) {
+	var opts *Options
+	if len(options) > 0 {
+		opts = getOptions(0, options...)
+	} else {
+		opts = s.options
 	}
 
-	// value exists and is stale, and we're OK with serving it stale while updating in the background
-	// note: stale means its still okay, but not fresh. but if its expired, then it means its useless.
-	if ok && !freshOnly && !val.IsExpired() {
-		// TODO: technically could be a stampede of goroutines here if the value is expired
-		// and we're OK with serving it stale
-		go c.Set(ctx, key, fn)
-		return val.Value(), nil
-	}
+	key = fmt.Sprintf("stampede:%s", key)
 
-	// value doesn't exist or is expired, or is stale and we need it fresh (freshOnly:true) - sync update
-	v, _, err := c.Set(ctx, key, fn)
-	return v, err
-}
+	if opts.SkipCache || s.cache == nil {
+		// Singleflight mode only
+		result, err, _ := s.callGroup.Do(key, func() (doResult[V], error) {
+			v, ttl, err := fn()
+			if err != nil {
+				return doResult[V]{Value: v, TTL: ttl}, err
+			}
+			return doResult[V]{Value: v, TTL: ttl}, nil
+		})
+		return result.Value, err
 
-func (c *Cache[K, V]) set(key K, fn func() (V, error)) func() (V, error) {
-	return func() (V, error) {
-		val, err := fn()
+	} else {
+		// Caching + Singleflight combo mode
+		s.mu.RLock()
+		v, ok, err := s.cache.Get(ctx, key)
 		if err != nil {
-			return val, err
+			s.mu.RUnlock()
+			return v, err
+		}
+		s.mu.RUnlock()
+		if ok {
+			// cache hit
+			return v, nil
 		}
 
-		c.mu.Lock()
-		c.values.Add(key, value[V]{
-			v:          val,
-			expiry:     time.Now().Add(c.ttl),
-			bestBefore: time.Now().Add(c.freshFor),
+		result, err, _ := s.callGroup.Do(key, func() (doResult[V], error) {
+			v, ttl, err := fn()
+			if err != nil {
+				return doResult[V]{Value: v, TTL: ttl}, err
+			}
+			return doResult[V]{Value: v, TTL: ttl}, nil
 		})
-		c.mu.Unlock()
 
-		return val, nil
+		if err != nil {
+			return result.Value, err
+		}
+
+		var ttl time.Duration
+		if result.TTL != nil {
+			ttl = *result.TTL
+		} else {
+			ttl = opts.TTL
+		}
+
+		s.mu.Lock()
+		err = s.cache.SetEx(ctx, key, result.Value, ttl)
+		if err != nil {
+			s.mu.Unlock()
+			// We log the error here and return the result.Value
+			s.logger.Error("stampede: fail to set cache value", "err", err)
+			return result.Value, nil
+		}
+		s.mu.Unlock()
+		return result.Value, nil
 	}
 }
 
-type value[V any] struct {
-	v V
-
-	bestBefore time.Time // cache entry freshness cutoff
-	expiry     time.Time // cache entry time to live cutoff
-}
-
-func (v *value[V]) IsFresh() bool {
-	return v.bestBefore.After(time.Now())
-}
-
-func (v *value[V]) IsExpired() bool {
-	return v.expiry.Before(time.Now())
-}
-
-func (v *value[V]) Value() V {
-	return v.v
+func (s *stampede[V]) SetOptions(options *Options) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.options = options
 }
 
 func BytesToHash(b ...[]byte) uint64 {
