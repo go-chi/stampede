@@ -54,8 +54,6 @@ func (s *stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Du
 		opts = s.options
 	}
 
-	// TODO: what happens if we have a panic in the fn ..?
-
 	key = fmt.Sprintf("stampede:%s", key)
 
 	if opts.SkipCache || s.cache == nil {
