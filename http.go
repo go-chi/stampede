@@ -2,6 +2,7 @@ package stampede
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -110,7 +111,7 @@ func cacheKeyWithRequestHeaders(headers []string) func(r *http.Request) (uint64,
 type CacheKeyFunc func(r *http.Request) (uint64, error)
 
 func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue], cacheKeyFunc CacheKeyFunc, options *Options) func(next http.Handler) http.Handler {
-	stampede := NewStampede(cache)
+	stampede := NewStampede(logger, cache)
 	stampede.SetOptions(options)
 
 	return func(next http.Handler) http.Handler {
@@ -124,7 +125,7 @@ func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue],
 
 			firstRequest := false
 
-			cachedVal, err := stampede.Do(fmt.Sprintf("http:%d", cacheKey), func() (responseValue, *time.Duration, error) {
+			cachedVal, err := stampede.Do(context.Background(), fmt.Sprintf("http:%d", cacheKey), func() (responseValue, *time.Duration, error) {
 				firstRequest = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
@@ -151,7 +152,6 @@ func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue],
 			})
 
 			if firstRequest {
-				fmt.Println("first request")
 				return
 			}
 
@@ -165,7 +165,6 @@ func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue],
 			// if the handler did not write a header, then serve the next handler
 			// a standard request handler
 			if cachedVal.Skip {
-				panic("TODO")
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -177,14 +176,18 @@ func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue],
 				// value of that header. This is important when you don't want a
 				// header to affect all subsequent requests (for instance, when
 				// working with several CORS domains, you don't want the first domain
-				// to be recorded an to be printed in all responses)
+				// to be recorded an to be printed in all responses).
+				// Other examples include x-ratelimit or set-cookie. We therefore skip
+				// returning any header with "x-ratelimit" prefix, "access-control-" prefix, or "set-cookie".
+				//
+				// TODO: we can move these options to the `Options` struct, with the below as defaults.
 				headerKey := strings.ToLower(k)
-				if strings.HasPrefix(headerKey, "access-control-") {
+				if strings.HasPrefix(headerKey, "x-ratelimit") || strings.HasPrefix(headerKey, "access-control-") || headerKey == "set-cookie" {
 					continue
 				}
 				respHeader[k] = v
 			}
-			respHeader.Set("x-cache", "hit") // TODO: confirm works....
+			respHeader.Set("x-cache", "hit")
 
 			w.WriteHeader(cachedVal.Status)
 			w.Write(cachedVal.Body)

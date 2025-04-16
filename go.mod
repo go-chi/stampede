@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.24.2
 
 require (
+	github.com/go-chi/cors v1.2.1
 	github.com/goware/cachestore2 v0.12.2
 	github.com/goware/singleflight v0.3.0
 	github.com/stretchr/testify v1.10.0

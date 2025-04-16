@@ -3,6 +3,7 @@ package stampede
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -18,13 +19,14 @@ const (
 	DefaultCacheTTL = 1 * time.Minute
 )
 
-func NewStampede[V any](cache cachestore.Store[V], options ...Option) *stampede[V] {
+func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options ...Option) *stampede[V] {
 	opts := &Options{}
 	for _, o := range options {
 		o(opts)
 	}
 
 	return &stampede[V]{
+		logger:    logger,
 		cache:     cache,
 		callGroup: singleflight.Group[string, doResult[V]]{},
 		options:   opts,
@@ -32,6 +34,7 @@ func NewStampede[V any](cache cachestore.Store[V], options ...Option) *stampede[
 }
 
 type stampede[V any] struct {
+	logger    *slog.Logger
 	cache     cachestore.Store[V]
 	callGroup singleflight.Group[string, doResult[V]]
 	options   *Options
@@ -43,7 +46,7 @@ type doResult[V any] struct {
 	TTL   *time.Duration
 }
 
-func (s *stampede[V]) Do(key string, fn func() (V, *time.Duration, error), options ...Option) (V, error) {
+func (s *stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Duration, error), options ...Option) (V, error) {
 	var opts *Options
 	if len(options) > 0 {
 		opts = getOptions(0, options...)
@@ -65,20 +68,18 @@ func (s *stampede[V]) Do(key string, fn func() (V, *time.Duration, error), optio
 			return doResult[V]{Value: v, TTL: ttl}, nil
 		})
 		return result.Value, err
+
 	} else {
 		// Caching + Singleflight combo mode
-
-		// TODO: handle if we have a panic..?
-
 		s.mu.RLock()
-		v, ok, err := s.cache.Get(context.Background(), key)
+		v, ok, err := s.cache.Get(ctx, key)
 		if err != nil {
 			s.mu.RUnlock()
 			return v, err
 		}
 		s.mu.RUnlock()
 		if ok {
-			fmt.Println("cache hit", v)
+			// cache hit
 			return v, nil
 		}
 
@@ -102,10 +103,12 @@ func (s *stampede[V]) Do(key string, fn func() (V, *time.Duration, error), optio
 		}
 
 		s.mu.Lock()
-		err = s.cache.SetEx(context.Background(), key, result.Value, ttl)
+		err = s.cache.SetEx(ctx, key, result.Value, ttl)
 		if err != nil {
 			s.mu.Unlock()
-			return result.Value, err // TODO: maybe just log this error instead ..?
+			// We log the error here and return the result.Value
+			s.logger.Error("stampede: fail to set cache value", "err", err)
+			return result.Value, nil
 		}
 		s.mu.Unlock()
 		return result.Value, nil

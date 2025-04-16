@@ -3,6 +3,8 @@ package stampede_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +18,7 @@ import (
 )
 
 func TestSingleflightDo(t *testing.T) {
-	s := stampede.NewStampede[int](nil)
+	s := stampede.NewStampede[int](slog.Default(), nil)
 
 	var numCalls atomic.Int64
 
@@ -25,7 +27,7 @@ func TestSingleflightDo(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		v, err := s.Do("t1", func() (int, *time.Duration, error) {
+		v, err := s.Do(context.Background(), "t1", func() (int, *time.Duration, error) {
 			numCalls.Add(1)
 			time.Sleep(1 * time.Second)
 			return 1, nil, nil
@@ -42,7 +44,7 @@ func TestSingleflightDo(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			v, err := s.Do("t1", func() (int, *time.Duration, error) {
+			v, err := s.Do(context.Background(), "t1", func() (int, *time.Duration, error) {
 				numCalls.Add(1)
 				return i, nil, nil
 			})
@@ -56,14 +58,60 @@ func TestSingleflightDo(t *testing.T) {
 	require.Equal(t, int64(1), numCalls.Load())
 }
 
+func TestCachedDo(t *testing.T) {
+	var count uint64
+	stampede := stampede.NewStampede(slog.Default(), newMockCacheBackend(), stampede.WithTTL(5*time.Second))
+
+	// repeat test multiple times
+	for x := 0; x < 5; x++ {
+		// time.Sleep(1 * time.Second)
+
+		var wg sync.WaitGroup
+		n := 10
+		ctx := context.Background()
+
+		for i := 0; i < n; i++ {
+			t.Logf("numGoroutines now %d", runtime.NumGoroutine())
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				val, err := stampede.Do(ctx, "t1", func() (any, *time.Duration, error) {
+					t.Log("cache.Get(t1, ...)")
+
+					// some extensive op..
+					time.Sleep(2 * time.Second)
+					atomic.AddUint64(&count, 1)
+
+					return "result1", nil, nil
+				})
+
+				assert.NoError(t, err)
+				assert.Equal(t, "result1", val)
+			}()
+		}
+
+		wg.Wait()
+
+		// ensure single call
+		assert.Equal(t, uint64(1), count)
+
+		// confirm same before/after num of goroutines
+		t.Logf("numGoroutines now %d", runtime.NumGoroutine())
+	}
+}
+
 func newMockCacheBackend() cachestore.Backend {
 	return &mockCacheBackend[any]{
-		cache: make(map[string]any),
+		cache:  make(map[string]any),
+		expiry: make(map[string]int64),
 	}
 }
 
 type mockCacheBackend[V any] struct {
-	cache map[string]V
+	cache  map[string]V
+	expiry map[string]int64
 }
 
 var _ cachestore.Backend = &mockCacheBackend[any]{}
@@ -88,6 +136,7 @@ func (m *mockCacheBackend[V]) Set(ctx context.Context, key string, value V) erro
 
 func (m *mockCacheBackend[V]) SetEx(ctx context.Context, key string, value V, ttl time.Duration) error {
 	m.cache[key] = value
+	m.expiry[key] = time.Now().Unix() + int64(ttl.Seconds())
 	return nil
 }
 
@@ -101,12 +150,22 @@ func (m *mockCacheBackend[V]) BatchSet(ctx context.Context, keys []string, value
 func (m *mockCacheBackend[V]) BatchSetEx(ctx context.Context, keys []string, values []V, ttl time.Duration) error {
 	for i, key := range keys {
 		m.cache[key] = values[i]
+		m.expiry[key] = time.Now().Unix() + int64(ttl.Seconds())
 	}
 	return nil
 }
 
 func (m *mockCacheBackend[V]) Get(ctx context.Context, key string) (V, bool, error) {
 	v, ok := m.cache[key]
+	if ok {
+		expiry, ok := m.expiry[key]
+		if ok && expiry < time.Now().Unix() {
+			delete(m.cache, key)
+			delete(m.expiry, key)
+			var v V
+			return v, false, nil
+		}
+	}
 	return v, ok, nil
 }
 
@@ -119,12 +178,21 @@ func (m *mockCacheBackend[V]) BatchGet(ctx context.Context, keys []string) ([]V,
 		if err != nil {
 			return nil, nil, err
 		}
+		if exists[i] {
+			expiry, ok := m.expiry[key]
+			if ok && expiry < time.Now().Unix() {
+				exists[i] = false
+				var v V
+				values[i] = v
+			}
+		}
 	}
 	return values, exists, nil
 }
 
 func (m *mockCacheBackend[V]) Delete(ctx context.Context, key string) error {
 	delete(m.cache, key)
+	delete(m.expiry, key)
 	return nil
 }
 
@@ -132,6 +200,7 @@ func (m *mockCacheBackend[V]) DeletePrefix(ctx context.Context, keyPrefix string
 	for key := range m.cache {
 		if strings.HasPrefix(key, keyPrefix) {
 			delete(m.cache, key)
+			delete(m.expiry, key)
 		}
 	}
 	return nil
@@ -139,6 +208,7 @@ func (m *mockCacheBackend[V]) DeletePrefix(ctx context.Context, keyPrefix string
 
 func (m *mockCacheBackend[V]) ClearAll(ctx context.Context) error {
 	m.cache = make(map[string]V)
+	m.expiry = make(map[string]int64)
 	return nil
 }
 
