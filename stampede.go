@@ -11,12 +11,12 @@ import (
 	"github.com/zeebo/xxh3"
 )
 
-type stampede[V any] struct {
-	cache     cachestore.Store[V]
-	callGroup singleflight.Group[uint64, V]
-	options   *Options
-	mu        sync.RWMutex
-}
+const (
+	// DefaultCacheTTL is the default TTL for cache entries. However,
+	// you can pass WithTTL(d) to set your own ttl, or pass
+	// WithSkipCache() to disable caching
+	DefaultCacheTTL = 1 * time.Minute
+)
 
 func NewStampede[V any](cache cachestore.Store[V], options ...Option) *stampede[V] {
 	opts := &Options{}
@@ -26,18 +26,19 @@ func NewStampede[V any](cache cachestore.Store[V], options ...Option) *stampede[
 
 	return &stampede[V]{
 		cache:     cache,
-		callGroup: singleflight.Group[uint64, V]{},
+		callGroup: singleflight.Group[string, V]{},
 		options:   opts,
 	}
 }
 
-// TODO: maybe always use key as uint64 ..? and we use
-// xxhash3 thing..? kinda makes sense to me..
+type stampede[V any] struct {
+	cache     cachestore.Store[V]
+	callGroup singleflight.Group[string, V]
+	options   *Options
+	mu        sync.RWMutex
+}
 
 func (s *stampede[V]) Do(key string, fn func() (V, error), options ...Option) (V, error) {
-	k := StringToHash(key)
-	_ = k
-
 	opts := &Options{}
 	for _, o := range options {
 		o(opts)
@@ -49,54 +50,55 @@ func (s *stampede[V]) Do(key string, fn func() (V, error), options ...Option) (V
 	// TODO: what happens if we have a panic in the fn ..?
 
 	if opts.SkipCache || s.cache == nil {
-		// TODO: is there a memory leak or something with .Do() ..?
-		v, err, _ := s.callGroup.Do(k, func() (V, error) {
+		// Singleflight mode only
+		v, err, _ := s.callGroup.Do(key, func() (V, error) {
 			return fn()
 		})
 		return v, err
 	} else {
+		// Caching + Singleflight combo mode
 
 		// TODO: handle if we have a panic..?
 
-		s.mu.Lock()
+		s.mu.RLock()
 		v, ok, err := s.cache.Get(context.Background(), key)
 		if err != nil {
-			s.mu.Unlock()
+			s.mu.RUnlock()
 			return v, err
 		}
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		if ok {
 			fmt.Println("cache hit", v)
 			return v, nil
 		}
 
-		// TODO: we can check if v is still fresh.. etc.?
-
-		v, err, _ = s.callGroup.Do(k, func() (V, error) {
+		v, err, _ = s.callGroup.Do(key, func() (V, error) {
 			return fn()
 		})
 		if err != nil {
 			return v, err
 		}
 
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		// TODO: maybe we should have CacheTTL pkg-level default..? like 1 minute ..?
-
 		ttl := opts.TTL
 		if ttl == 0 {
-			ttl = 1 * time.Minute // pkg-level default of 1 min..
+			ttl = DefaultCacheTTL
 		}
 
+		s.mu.Lock()
 		err = s.cache.SetEx(context.Background(), key, v, ttl)
 		if err != nil {
-			// maybe just log this error instead ..?
-			return v, err
+			s.mu.Unlock()
+			return v, err // TODO: maybe just log this error instead ..?
 		}
+		s.mu.Unlock()
 		return v, nil
-
 	}
+}
+
+func (s *stampede[V]) SetOptions(options *Options) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.options = options
 }
 
 func BytesToHash(b ...[]byte) uint64 {

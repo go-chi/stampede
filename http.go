@@ -12,70 +12,102 @@ import (
 	cachestore "github.com/goware/cachestore2"
 )
 
-// TODO: we want TTL for OK and TTL for error ..
-// but really, it could be any TTL depending on the request ..
+func HandlerWithKey(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, cacheKeyFunc CacheKeyFunc, options ...Option) func(next http.Handler) http.Handler {
+	opts := getOptions(ttl, options...)
 
-// kinda need like ... for status set the TTL ..?
+	// Combine various cache key functions into a single cache key value.
+	cacheKeyWithRequestHeaders := cacheKeyWithRequestHeaders(opts.HTTPCacheKeyRequestHeaders)
 
-func Handler2(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, options ...Option) func(next http.Handler) http.Handler {
-	opts := &Options{
-		TTL: ttl,
-	}
-	for _, o := range options {
-		o(opts)
-	}
-
-	var cacheKeyFunc func(r *http.Request) (uint64, error)
-
-	if !opts.HTTPCacheKeyRequestBody {
-		cacheKeyFunc = func(r *http.Request) (uint64, error) {
-			return StringToHash(strings.ToLower(r.URL.Path)), nil
+	comboCacheKeyFunc := func(r *http.Request) (uint64, error) {
+		var cacheKey1, cacheKey2, cacheKey3, cacheKey4 uint64
+		var err error
+		cacheKey1, err = cacheKeyWithRequestURL(r)
+		if err != nil {
+			return 0, err
 		}
-	} else {
-		cacheKeyFunc = func(r *http.Request) (uint64, error) {
-			// Read the request payload, and then setup buffer for future reader
-			var err error
-			var buf []byte
-			if r.Body != nil {
-				buf, err = io.ReadAll(r.Body)
-				if err != nil {
-					return 0, err
-				}
-				r.Body = io.NopCloser(bytes.NewBuffer(buf))
+		if opts.HTTPCacheKeyRequestBody {
+			cacheKey2, err = cacheKeyWithRequestBody(r)
+			if err != nil {
+				return 0, err
 			}
-
-			// Prepare cache key based on request URL path and the request data payload.
-			key := BytesToHash([]byte(strings.ToLower(r.URL.Path)), buf)
-			return key, nil
 		}
+		if len(opts.HTTPCacheKeyRequestHeaders) > 0 {
+			cacheKey3, err = cacheKeyWithRequestHeaders(r)
+			if err != nil {
+				return 0, err
+			}
+		}
+		if cacheKeyFunc != nil {
+			cacheKey4, err = cacheKeyFunc(r)
+			if err != nil {
+				return 0, err
+			}
+		}
+		return cacheKey1 + cacheKey2 + cacheKey3 + cacheKey4, nil
 	}
 
-	var cache cachestore.Store[responseValue2]
+	var cache cachestore.Store[responseValue]
 	if cacheBackend != nil {
-		cache = cachestore.OpenStore[responseValue2](cacheBackend)
+		cache = cachestore.OpenStore[responseValue](cacheBackend)
 	}
-	h := stampedeHandler2(logger, cache, cacheKeyFunc, opts)
+	h := stampedeHandler(logger, cache, comboCacheKeyFunc, opts)
 
 	return func(next http.Handler) http.Handler {
-
-		// TODO: the "wee" function(request) doesn't make sense, because
-		// we actually need the response ..
-		// and also, might want to "vary" on the response headers ....?
-
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h(next).ServeHTTP(w, r)
 		})
 	}
 }
 
+func Handler(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, options ...Option) func(next http.Handler) http.Handler {
+	return HandlerWithKey(logger, cacheBackend, ttl, nil, options...)
+}
+
+func cacheKeyWithRequestURL(r *http.Request) (uint64, error) {
+	return StringToHash(strings.ToLower(r.URL.Path)), nil
+}
+
+func cacheKeyWithRequestBody(r *http.Request) (uint64, error) {
+	// Read the request payload, and then setup buffer for future reader
+	var err error
+	var buf []byte
+	if r.Body != nil {
+		buf, err = io.ReadAll(r.Body)
+		if err != nil {
+			return 0, err
+		}
+		r.Body = io.NopCloser(bytes.NewBuffer(buf))
+	}
+
+	// Prepare cache key based on the request data payload.
+	return BytesToHash(buf), nil
+}
+
+func cacheKeyWithRequestHeaders(headers []string) func(r *http.Request) (uint64, error) {
+	return func(r *http.Request) (uint64, error) {
+		if len(headers) == 0 {
+			return 0, nil
+		}
+		var keys []string
+		for _, header := range headers {
+			v := r.Header.Get(header)
+			if v == "" {
+				continue
+			}
+			keys = append(keys, fmt.Sprintf("%s:%s", strings.ToLower(header), v))
+		}
+		return StringToHash(keys...), nil
+	}
+}
+
 type CacheKeyFunc func(r *http.Request) (uint64, error)
 
-func stampedeHandler2(logger *slog.Logger, cache cachestore.Store[responseValue2], cacheKeyFunc CacheKeyFunc, options *Options) func(next http.Handler) http.Handler {
+func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue], cacheKeyFunc CacheKeyFunc, options *Options) func(next http.Handler) http.Handler {
 	stampede := NewStampede(cache)
+	stampede.SetOptions(options)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
 			cacheKey, err := cacheKeyFunc(r)
 			if err != nil {
 				logger.Warn("stampede: fail to compute cache key", "err", err)
@@ -85,23 +117,14 @@ func stampedeHandler2(logger *slog.Logger, cache cachestore.Store[responseValue2
 
 			firstRequest := false
 
-			k := fmt.Sprintf("%d", cacheKey) // TODO ...
-
-			ttl := options.TTL
-			_ = ttl
-
-			// TODO: pass down the greater TTL to the .Do()..
-
-			// TODO: .. THEN .. we can check cachedVal.TS and we'll
-
-			cachedVal, err := stampede.Do(k, func() (responseValue2, error) {
+			cachedVal, err := stampede.Do(fmt.Sprintf("%d", cacheKey), func() (responseValue, error) {
 				firstRequest = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
 
 				next.ServeHTTP(ww, r)
 
-				val := responseValue2{
+				val := responseValue{
 					Headers: ww.Header(),
 					Status:  ww.Status(),
 					Body:    buf.Bytes(),
@@ -111,9 +134,7 @@ func stampedeHandler2(logger *slog.Logger, cache cachestore.Store[responseValue2
 					Skip: !ww.IsValid(),
 				}
 				return val, nil
-			}) //, options) // TODO .. we need this..
-			_ = cacheKey
-			_ = firstRequest
+			})
 
 			if firstRequest {
 				fmt.Println("first request")
@@ -149,7 +170,7 @@ func stampedeHandler2(logger *slog.Logger, cache cachestore.Store[responseValue2
 				}
 				respHeader[k] = v
 			}
-			respHeader.Set("x-cache", "hit") // TODO: confirm works..
+			respHeader.Set("x-cache", "hit") // TODO: confirm works....
 
 			w.WriteHeader(cachedVal.Status)
 			w.Write(cachedVal.Body)
@@ -157,7 +178,7 @@ func stampedeHandler2(logger *slog.Logger, cache cachestore.Store[responseValue2
 	}
 }
 
-type responseValue2 struct {
+type responseValue struct {
 	Headers http.Header `json:"headers"`
 	Status  int         `json:"status"`
 	Body    []byte      `json:"body"`

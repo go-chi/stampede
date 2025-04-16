@@ -10,12 +10,10 @@ import (
 	"time"
 
 	"github.com/go-chi/stampede"
-	memcache "github.com/goware/cachestore-mem"
-	cachestore "github.com/goware/cachestore2"
 	"github.com/stretchr/testify/require"
 )
 
-func Test2SingleflightHTTPHandler(t *testing.T) {
+func TestSingleflightHTTPHandler(t *testing.T) {
 	// Create a counter to track how many times handlers are called
 	var callCount int
 	var mu sync.Mutex
@@ -85,7 +83,7 @@ func Test2SingleflightHTTPHandler(t *testing.T) {
 	require.Equal(t, 1, callCount)
 }
 
-func Test2HTTPCachingHandler(t *testing.T) {
+func TestHTTPCachingHandler(t *testing.T) {
 	// Create a counter to track how many times handlers are called
 	var callCount int
 	var mu sync.Mutex
@@ -107,10 +105,10 @@ func Test2HTTPCachingHandler(t *testing.T) {
 	})
 
 	// Apply Handler2 to the slow handler only
-	cache, err := memcache.NewBackend(1000, cachestore.WithDefaultKeyExpiry(10*time.Second))
-	require.NoError(t, err)
+	// cache, _ := memcache.NewBackend(1000, cachestore.WithDefaultKeyExpiry(10*time.Second))
+	cache := newMockCacheBackend()
 
-	wrappedSlowHandler := stampede.Handler2(slog.Default(), cache, 5*time.Second,
+	wrappedSlowHandler := stampede.Handler(slog.Default(), cache, 5*time.Second,
 		stampede.WithHTTPStatusTTL(func(status int) time.Duration {
 			switch {
 			case status >= 200 && status < 300:
