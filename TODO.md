@@ -10,6 +10,10 @@ TODO
 
 - [x] vary header support, which will adjust cache key too, and singleflight key.. etc.
 
+- [x] HTTPStatusTTL isn't used anywhere..
+
 - [ ] what if there is a panic in the caller fn or http handelr..?
 
 - [ ] developer experience on per-handler setup..?
+
+- [ ] update examples and README

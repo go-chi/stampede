@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/stampede"
+	memcache "github.com/goware/cachestore-mem"
 )
 
 // Example 1: Make two parallel requests:
@@ -67,14 +68,23 @@ func main() {
 		w.Write([]byte("index"))
 	})
 
+	cache, err := memcache.NewBackend(1000)
+	if err != nil {
+		panic(err)
+	}
+
 	// Include anything user specific, e.g. Authorization Token
-	customKeyFunc := func(r *http.Request) (uint64, error) {
+	customCacheKeyFunc := func(r *http.Request) (uint64, error) {
 		token := r.Header.Get("Authorization")
 		return stampede.StringToHash(r.Method, strings.ToLower(strings.ToLower(token))), nil
 	}
-	cached := stampede.HandlerWithKey(slog.Default(), 512, 1*time.Second, customKeyFunc)
 
-	r.With(cached).Get("/me", func(w http.ResponseWriter, r *http.Request) {
+	cacheMiddleware := stampede.HandlerWithKey(
+		slog.Default(), cache, 5*time.Second, customCacheKeyFunc,
+		stampede.WithHTTPCacheKeyRequestBody(false),
+	)
+
+	r.With(cacheMiddleware).Get("/me", func(w http.ResponseWriter, r *http.Request) {
 		// processing..
 		time.Sleep(3 * time.Second)
 

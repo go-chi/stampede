@@ -25,10 +25,10 @@ func TestSingleflightDo(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		v, err := s.Do("t1", func() (int, error) {
+		v, err := s.Do("t1", func() (int, *time.Duration, error) {
 			numCalls.Add(1)
 			time.Sleep(1 * time.Second)
-			return 1, nil
+			return 1, nil, nil
 		}, stampede.WithTTL(1*time.Second))
 		assert.NoError(t, err)
 		assert.Equal(t, 1, v)
@@ -42,9 +42,9 @@ func TestSingleflightDo(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			v, err := s.Do("t1", func() (int, error) {
+			v, err := s.Do("t1", func() (int, *time.Duration, error) {
 				numCalls.Add(1)
-				return i, nil
+				return i, nil, nil
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, 1, v)

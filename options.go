@@ -97,6 +97,9 @@ type Option func(*Options)
 // getOptions returns a new Options with the given ttl and options,
 // and also applies default values for any options that are not set.
 func getOptions(ttl time.Duration, options ...Option) *Options {
+	if ttl == 0 {
+		ttl = DefaultCacheTTL
+	}
 	opts := &Options{
 		TTL:                        ttl,
 		SkipCache:                  false,

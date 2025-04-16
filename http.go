@@ -12,6 +12,10 @@ import (
 	cachestore "github.com/goware/cachestore2"
 )
 
+func Handler(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, options ...Option) func(next http.Handler) http.Handler {
+	return HandlerWithKey(logger, cacheBackend, ttl, nil, options...)
+}
+
 func HandlerWithKey(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, cacheKeyFunc CacheKeyFunc, options ...Option) func(next http.Handler) http.Handler {
 	opts := getOptions(ttl, options...)
 
@@ -59,15 +63,18 @@ func HandlerWithKey(logger *slog.Logger, cacheBackend cachestore.Backend, ttl ti
 	}
 }
 
-func Handler(logger *slog.Logger, cacheBackend cachestore.Backend, ttl time.Duration, options ...Option) func(next http.Handler) http.Handler {
-	return HandlerWithKey(logger, cacheBackend, ttl, nil, options...)
-}
-
 func cacheKeyWithRequestURL(r *http.Request) (uint64, error) {
 	return StringToHash(strings.ToLower(r.URL.Path)), nil
 }
 
 func cacheKeyWithRequestBody(r *http.Request) (uint64, error) {
+	// Skip request body caching for non-POST, PUT, PATCH requests.
+	// If you'd like to cache these, you can use the `HandlerWithKey`
+	// function which accepts a custom cache key function.
+	if r.Method != "POST" && r.Method != "PUT" && r.Method != "PATCH" {
+		return 0, nil
+	}
+
 	// Read the request payload, and then setup buffer for future reader
 	var err error
 	var buf []byte
@@ -117,7 +124,7 @@ func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue],
 
 			firstRequest := false
 
-			cachedVal, err := stampede.Do(fmt.Sprintf("%d", cacheKey), func() (responseValue, error) {
+			cachedVal, err := stampede.Do(fmt.Sprintf("http:%d", cacheKey), func() (responseValue, *time.Duration, error) {
 				firstRequest = true
 				buf := bytes.NewBuffer(nil)
 				ww := &responseWriter{ResponseWriter: w, tee: buf}
@@ -133,7 +140,14 @@ func stampedeHandler(logger *slog.Logger, cache cachestore.Store[responseValue],
 					// while writing only the body, an attempt is made to write the default header (http.StatusOK)
 					Skip: !ww.IsValid(),
 				}
-				return val, nil
+
+				var ttl *time.Duration
+				if options.HTTPStatusTTL != nil {
+					t := options.HTTPStatusTTL(ww.Status())
+					ttl = &t
+				}
+
+				return val, ttl, nil
 			})
 
 			if firstRequest {

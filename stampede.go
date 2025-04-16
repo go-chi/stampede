@@ -26,35 +26,45 @@ func NewStampede[V any](cache cachestore.Store[V], options ...Option) *stampede[
 
 	return &stampede[V]{
 		cache:     cache,
-		callGroup: singleflight.Group[string, V]{},
+		callGroup: singleflight.Group[string, doResult[V]]{},
 		options:   opts,
 	}
 }
 
 type stampede[V any] struct {
 	cache     cachestore.Store[V]
-	callGroup singleflight.Group[string, V]
+	callGroup singleflight.Group[string, doResult[V]]
 	options   *Options
 	mu        sync.RWMutex
 }
 
-func (s *stampede[V]) Do(key string, fn func() (V, error), options ...Option) (V, error) {
-	opts := &Options{}
-	for _, o := range options {
-		o(opts)
-	}
-	if len(options) == 0 {
+type doResult[V any] struct {
+	Value V
+	TTL   *time.Duration
+}
+
+func (s *stampede[V]) Do(key string, fn func() (V, *time.Duration, error), options ...Option) (V, error) {
+	var opts *Options
+	if len(options) > 0 {
+		opts = getOptions(0, options...)
+	} else {
 		opts = s.options
 	}
 
 	// TODO: what happens if we have a panic in the fn ..?
 
+	key = fmt.Sprintf("stampede:%s", key)
+
 	if opts.SkipCache || s.cache == nil {
 		// Singleflight mode only
-		v, err, _ := s.callGroup.Do(key, func() (V, error) {
-			return fn()
+		result, err, _ := s.callGroup.Do(key, func() (doResult[V], error) {
+			v, ttl, err := fn()
+			if err != nil {
+				return doResult[V]{Value: v, TTL: ttl}, err
+			}
+			return doResult[V]{Value: v, TTL: ttl}, nil
 		})
-		return v, err
+		return result.Value, err
 	} else {
 		// Caching + Singleflight combo mode
 
@@ -72,26 +82,33 @@ func (s *stampede[V]) Do(key string, fn func() (V, error), options ...Option) (V
 			return v, nil
 		}
 
-		v, err, _ = s.callGroup.Do(key, func() (V, error) {
-			return fn()
+		result, err, _ := s.callGroup.Do(key, func() (doResult[V], error) {
+			v, ttl, err := fn()
+			if err != nil {
+				return doResult[V]{Value: v, TTL: ttl}, err
+			}
+			return doResult[V]{Value: v, TTL: ttl}, nil
 		})
+
 		if err != nil {
-			return v, err
+			return result.Value, err
 		}
 
-		ttl := opts.TTL
-		if ttl == 0 {
-			ttl = DefaultCacheTTL
+		var ttl time.Duration
+		if result.TTL != nil {
+			ttl = *result.TTL
+		} else {
+			ttl = opts.TTL
 		}
 
 		s.mu.Lock()
-		err = s.cache.SetEx(context.Background(), key, v, ttl)
+		err = s.cache.SetEx(context.Background(), key, result.Value, ttl)
 		if err != nil {
 			s.mu.Unlock()
-			return v, err // TODO: maybe just log this error instead ..?
+			return result.Value, err // TODO: maybe just log this error instead ..?
 		}
 		s.mu.Unlock()
-		return v, nil
+		return result.Value, nil
 	}
 }
 
