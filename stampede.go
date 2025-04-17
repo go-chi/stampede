@@ -100,6 +100,12 @@ func (s *stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Du
 			ttl = opts.TTL
 		}
 
+		// if ttl is 0, don't cache the result
+		if ttl == 0 {
+			return result.Value, nil
+		}
+
+		// cache the result
 		s.mu.Lock()
 		err = s.cache.SetEx(ctx, key, result.Value, ttl)
 		if err != nil {
