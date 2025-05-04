@@ -19,7 +19,12 @@ const (
 	DefaultCacheTTL = 1 * time.Minute
 )
 
-func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options ...Option) *stampede[V] {
+type Stampede[V any] interface {
+	SetOptions(options *Options)
+	Do(ctx context.Context, key string, fn func() (V, *time.Duration, error), options ...Option) (V, error)
+}
+
+func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options ...Option) Stampede[V] {
 	opts := &Options{}
 	for _, o := range options {
 		o(opts)
