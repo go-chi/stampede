@@ -18,7 +18,8 @@ import (
 )
 
 func TestSingleflightDo(t *testing.T) {
-	s := stampede.NewStampede[int](slog.Default(), nil)
+	var s *stampede.Stampede[int]
+	s = stampede.NewStampede[int](slog.Default(), nil)
 
 	var numCalls atomic.Int64
 

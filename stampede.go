@@ -19,13 +19,13 @@ const (
 	DefaultCacheTTL = 1 * time.Minute
 )
 
-func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options ...Option) *stampede[V] {
+func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options ...Option) *Stampede[V] {
 	opts := &Options{}
 	for _, o := range options {
 		o(opts)
 	}
 
-	return &stampede[V]{
+	return &Stampede[V]{
 		logger:    logger,
 		cache:     cache,
 		callGroup: singleflight.Group[string, doResult[V]]{},
@@ -33,7 +33,7 @@ func NewStampede[V any](logger *slog.Logger, cache cachestore.Store[V], options 
 	}
 }
 
-type stampede[V any] struct {
+type Stampede[V any] struct {
 	logger    *slog.Logger
 	cache     cachestore.Store[V]
 	callGroup singleflight.Group[string, doResult[V]]
@@ -46,7 +46,7 @@ type doResult[V any] struct {
 	TTL   *time.Duration
 }
 
-func (s *stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Duration, error), options ...Option) (V, error) {
+func (s *Stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Duration, error), options ...Option) (V, error) {
 	var opts *Options
 	if len(options) > 0 {
 		opts = getOptions(0, options...)
@@ -119,7 +119,7 @@ func (s *stampede[V]) Do(ctx context.Context, key string, fn func() (V, *time.Du
 	}
 }
 
-func (s *stampede[V]) SetOptions(options *Options) {
+func (s *Stampede[V]) SetOptions(options *Options) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.options = options
